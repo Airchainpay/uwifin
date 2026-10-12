@@ -77,7 +77,7 @@ pub async fn challenge(
     if !state.config.wallet_enabled() {
         return Err(ApiError::new(
             "PROVIDER_NOT_CONFIGURED",
-            "Wallet connection is temporarily unavailable. Please try again later.",
+            "Wallet setup is temporarily unavailable. Please try again later.",
         ));
     }
     let address = if state.config.is_solana() {
@@ -88,7 +88,7 @@ pub async fn challenge(
     let id = uuid::Uuid::new_v4().to_string();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(5);
     let message = format!(
-        "UwiFin wallet connection\n\nConnect a wallet to your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}",
+        "UwiFin wallet setup\n\nPrepare your wallet for your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}",
         state.config.app_base_url,
         user.id,
         address,
@@ -129,7 +129,7 @@ pub async fn create_wallet(
     let mut tx = state.pool.begin().await?;
     let challenge = sqlx::query_as::<_, Challenge>("SELECT CAST(signer_address AS CHAR) AS signer_address, message FROM wallet_challenges WHERE id = ? AND user_id = ? AND session_hash = ? AND consumed_at IS NULL AND expires_at > NOW() AND network = ? FOR UPDATE")
         .bind(&req.challenge_id).bind(&user.id).bind(hash(session_token(&headers)?)).bind(&state.config.network).fetch_optional(&mut *tx).await?
-        .ok_or_else(|| ApiError::new("INVALID_REQUEST", "This wallet challenge has expired or was already used. Reconnect your wallet."))?;
+        .ok_or_else(|| ApiError::new("INVALID_REQUEST", "This wallet challenge has expired or was already used. Retry wallet setup."))?;
     let verified = if state.config.is_solana() {
         crate::solana::verify_ownership(
             &challenge.message,
@@ -166,10 +166,10 @@ pub async fn create_wallet(
     }
     let (address, provider_id, wallet_type) = if state.config.is_solana() {
         crate::solana::verify_chain(&state).await?;
-        (challenge.signer_address.clone(), None, "external")
+        (challenge.signer_address.clone(), None, "signing_account")
     } else {
         let response = crate::alchemy::wallet_rpc(&state, "wallet_requestAccount", serde_json::json!([{
-        "signerAddress": challenge.signer_address, "creationHint": { "accountType": "sma-b", "createAdditional": true }
+        "signerAddress": challenge.signer_address, "creationHint": { "accountType": "sma-b" }
     }])).await?;
         let address = validate_wallet_address(
             response["accountAddress"]

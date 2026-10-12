@@ -1,6 +1,5 @@
 'use client';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { disconnectEmailWallet } from '@/lib/email-wallet';
 import { request, type User } from '@/lib/api';
 
 type AuthContextValue = {
@@ -33,7 +32,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, []);
   const login = async (email: string, password: string) => {
-    await disconnectEmailWallet();
     const result = await request<{ user: User }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
@@ -41,7 +39,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   };
   const register = async (email: string, password: string, name: string) => {
-    await disconnectEmailWallet();
     const result = await request<{ user: User }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ email, password, name }),
@@ -51,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     await request('/auth/logout', { method: 'POST' });
     setUser(null);
-    await disconnectEmailWallet();
   };
   const updateName = async (name: string) => {
     await request('/users/me', { method: 'PATCH', body: JSON.stringify({ name }) });

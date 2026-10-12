@@ -1,9 +1,8 @@
 'use client';
-import { EmailWallet } from './EmailWallet';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { ArrowDownLeft, ArrowUpRight, Download, Link2, ShieldCheck } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Download, ShieldCheck } from 'lucide-react';
 import { useFinance } from '@/contexts/FinanceContext';
 import { decimalAmount, shortAddress } from '@/lib/money';
 import { selectNetwork } from '@/lib/api';
@@ -18,12 +17,11 @@ export function WalletPage() {
     loading,
     error,
     refresh,
-    connect,
+    walletReady,
+    settingUp,
     capabilities,
     networkLabel,
   } = useFinance();
-  const [busy, setBusy] = useState(false);
-  const [connectionError, setConnectionError] = useState('');
   return (
     <>
       <section className="page-heading">
@@ -32,31 +30,13 @@ export function WalletPage() {
           <h1>My wallet.</h1>
           <p>Hold and transfer USDC on your selected network.</p>
         </div>
-        <button
-          className="button primary"
-          disabled={busy || !capabilities?.wallet_enabled}
-          onClick={async () => {
-            setBusy(true);
-            setConnectionError('');
-            try {
-              await connect();
-            } catch (err) {
-              setConnectionError(err instanceof Error ? err.message : 'Wallet connection failed.');
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <Link2 size={16} />
-          {busy ? 'Approve in your wallet…' : 'Connect wallet'}
-        </button>
       </section>
       <label>
         Network
         <select
           className="input"
           value={capabilities?.network || ''}
-          disabled={!capabilities || busy}
+          disabled={!capabilities || settingUp}
           onChange={(event) => selectNetwork(event.target.value)}
         >
           {!capabilities && <option value="">Loading networks…</option>}
@@ -67,15 +47,15 @@ export function WalletPage() {
           ))}
         </select>
       </label>
-      {capabilities?.family === 'evm' && <EmailWallet />}
-      {(error || connectionError) && (
+      {error && (
         <p className="error-banner" role="alert">
-          {connectionError || error}
+          {error}
         </p>
       )}
       {capabilities && !capabilities.wallet_enabled && (
         <p className="info-note">
-          Wallet services are not configured yet. No wallet or balance has been created.
+          Wallet services are not configured yet. Your receive address will appear after setup
+          completes.
         </p>
       )}
       <div className="wallet-layout">
@@ -103,19 +83,27 @@ export function WalletPage() {
           <span className="wallet-label">Available USDC</span>
           <h2>{balanceKnown ? decimalAmount(balance) : loading ? 'Loading…' : 'Unavailable'}</h2>
           <div className="wallet-address-line">
-            <code>{wallet?.address || 'Connect a wallet to get started'}</code>
+            <code>
+              {wallet?.address ||
+                (settingUp ? 'Preparing your wallet…' : 'Wallet setup unavailable')}
+            </code>
             {wallet && <CopyButton value={wallet.address} />}
           </div>
           {wallet && (
             <>
-              <p>
-                Signing account: <code>{wallet.signer_address}</code>
-              </p>
+              {!walletReady && (
+                <p className="info-note">
+                  This is a previous wallet. Its balance and receive address remain available;
+                  sending requires migration to your embedded signing account.
+                </p>
+              )}
               <div className="wallet-main-actions">
-                <Link className="button primary" href="/send">
-                  <ArrowUpRight size={16} />
-                  Send
-                </Link>
+                {walletReady && (
+                  <Link className="button primary" href="/send">
+                    <ArrowUpRight size={16} />
+                    Send
+                  </Link>
+                )}
                 <Link className="button secondary" href="/receive">
                   <ArrowDownLeft size={16} />
                   Receive
@@ -129,20 +117,18 @@ export function WalletPage() {
         </section>
         <section className="card wallet-security">
           <ShieldCheck size={30} />
-          <h2>Your wallet. Your control.</h2>
+          <h2>Your account. Your wallet.</h2>
           <p>
-            {capabilities?.family === 'solana'
-              ? 'Connect a Solana wallet such as Phantom and sign a message to verify ownership. Your connected account is your receive address.'
-              : 'Connect an Ethereum wallet and verify ownership to create an Alchemy smart wallet on the selected network.'}
+            Your wallet is created automatically after you sign up. Privy manages your signing keys
+            and restores access when you sign in.
           </p>
           <p>
-            Keep access to your signing wallet. UwiFin never asks for your private key or seed
-            phrase and cannot recover them.
+            Alchemy sponsors eligible transfer fees, including Solana token account rent. You only
+            need USDC.
           </p>
           <p>
-            {capabilities?.family === 'solana'
-              ? 'Alchemy sponsors eligible network fees and token account rent. You only need USDC; sending requires approved sponsorship.'
-              : 'Your smart wallet address differs from your signing account. Use the receive address shown here.'}
+            Use the receive address shown here. On Base and Ethereum it is your smart account
+            address; on Solana it is your embedded wallet address.
           </p>
         </section>
       </div>
@@ -225,9 +211,9 @@ export function ReceivePage() {
           </>
         ) : (
           <>
-            <p>Connect a wallet before receiving funds.</p>
+            <p>Your receive address appears automatically when wallet setup finishes.</p>
             <Link href="/wallet" className="button primary">
-              Connect wallet
+              View wallet setup
             </Link>
           </>
         )}

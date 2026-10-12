@@ -14,8 +14,16 @@ export function SendPage({
   initialAmount?: string;
 }) {
   const { user } = useAuth();
-  const { wallet, balance, balanceKnown, capabilities, networkLabel, send, transfers } =
-    useFinance();
+  const {
+    wallet,
+    walletReady,
+    balance,
+    balanceKnown,
+    capabilities,
+    networkLabel,
+    send,
+    transfers,
+  } = useFinance();
   const [recipient, setRecipient] = useState(initialRecipient === 'new' ? '' : initialRecipient);
   const [amount, setAmount] = useState(initialAmount);
   const [review, setReview] = useState(false);
@@ -29,8 +37,8 @@ export function SendPage({
     event.preventDefault();
     setError('');
     try {
-      if (!wallet || !balanceKnown)
-        throw new Error('Connect a wallet and refresh its balance first.');
+      if (!wallet || !walletReady || !balanceKnown)
+        throw new Error('Wait for your wallet setup and balance to finish first.');
       if (
         !validateAddress(recipient, wallet.network) ||
         (wallet.network === 'solana-mainnet'
@@ -93,7 +101,7 @@ export function SendPage({
         <section className="card flow-card">
           {!wallet && (
             <p className="info-note">
-              <Link href="/wallet">Connect your wallet</Link> before sending.
+              <Link href="/wallet">Check your wallet setup</Link> before sending.
             </p>
           )}
           {current ? (
@@ -216,7 +224,9 @@ export function SendPage({
               )}
               <button
                 className="button primary"
-                disabled={!wallet || !balanceKnown || !capabilities?.transfers_enabled}
+                disabled={
+                  !wallet || !walletReady || !balanceKnown || !capabilities?.transfers_enabled
+                }
               >
                 Review transfer
               </button>

@@ -12,7 +12,9 @@ import { useAuth } from './AuthContext';
 import { request, type Wallet, type Balance, type Capabilities } from '@/lib/api';
 import type { Transfer } from '@/lib/transfers';
 import { parseAmount, validateAddress } from '@/lib/money';
-import { connectSmartWallet, signTransfer } from '@/lib/wallet';
+import { provisionWallet, signTransfer } from '@/lib/wallet';
+import { canSignWallet, prepareEmbeddedWallet } from '@/lib/embedded-wallet';
+import { useEmbeddedWallet } from './EmbeddedWalletContext';
 
 type FinanceState = {
   balance: string;
@@ -26,7 +28,10 @@ type FinanceState = {
   loading: boolean;
   error: string;
   selectWallet: (id: string) => void;
-  connect: (mode?: 'external' | 'email') => Promise<void>;
+  walletReady: boolean;
+  settingUp: boolean;
+  setupError: string;
+  retryWalletSetup: () => void;
   send: (recipient: string, amount: string, key: string) => Promise<Transfer>;
   refresh: () => Promise<void>;
 };
@@ -41,6 +46,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   );
 }
 function AccountFinance({ signedIn, children }: { signedIn: boolean; children: ReactNode }) {
+  const embedded = useEmbeddedWallet();
+  const [settingUp, setSettingUp] = useState(false);
+  const [setupError, setSetupError] = useState('');
+  const setupAttempt = useRef('');
   const [balance, setBalance] = useState('0');
   const [balanceKnown, setBalanceKnown] = useState(false);
   const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -52,7 +61,12 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
   const lock = useRef(false);
   const active = useRef(true);
   const fetchController = useRef<AbortController | null>(null);
-  const wallet = wallets.find((item) => item.id === selected) || wallets[0] || null;
+  const wallet =
+    wallets.find((item) => item.id === selected) ||
+    wallets.find((item) => canSignWallet(item, embedded)) ||
+    wallets[0] ||
+    null;
+  const walletReady = !!wallet && canSignWallet(wallet, embedded);
   useEffect(() => {
     active.current = true;
     return () => {
@@ -62,23 +76,54 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
   }, []);
   const refresh = useCallback(async () => {
     if (!signedIn) return;
-    fetchController.current?.abort();
+    if (fetchController.current) return;
     const controller = new AbortController();
     fetchController.current = controller;
     const options = { signal: controller.signal };
     setLoading(true);
     setError('');
+    setSettingUp(false);
     try {
-      const [config, records, history] = await Promise.all([
+      const [config, initialRecords, history] = await Promise.all([
         request<Capabilities>('/capabilities', options),
         request<Wallet[]>('/wallets', options),
         request<{ transactions: Transfer[] }>('/transactions?limit=100', options),
       ]);
       if (controller.signal.aborted) return;
       setCapabilities(config);
+      let records = initialRecords;
+      const signerAddress =
+        config.family === 'solana' ? embedded.solana?.address : embedded.evm?.address;
+      const attempt = `${config.network}:${signerAddress}`;
+      if (
+        signerAddress &&
+        config.wallet_enabled &&
+        !records.some((item) => canSignWallet(item, embedded)) &&
+        setupAttempt.current !== attempt
+      ) {
+        setupAttempt.current = attempt;
+        setSettingUp(true);
+        setSetupError('');
+        try {
+          const created = await prepareEmbeddedWallet(config, records, embedded, () =>
+            provisionWallet(config, embedded, controller.signal),
+          );
+          if (created) records = [created, ...records];
+        } catch (err) {
+          if (controller.signal.aborted) setupAttempt.current = '';
+          else
+            setSetupError(
+              err instanceof Error ? err.message : 'Automatic wallet setup could not finish.',
+            );
+        }
+      }
+      if (controller.signal.aborted) return;
       setWallets(records);
       setTransfers(history.transactions);
-      const current = records.find((item) => item.id === selected) || records[0];
+      const current =
+        records.find((item) => item.id === selected) ||
+        records.find((item) => canSignWallet(item, embedded)) ||
+        records[0];
       if (!current) {
         setBalance('0');
         setBalanceKnown(false);
@@ -99,9 +144,15 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
         setError(err instanceof Error ? err.message : 'Unable to load your wallet.');
       }
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (fetchController.current === controller) {
+        fetchController.current = null;
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setSettingUp(false);
+        }
+      }
     }
-  }, [selected, signedIn]);
+  }, [selected, signedIn, embedded]);
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => {
@@ -110,26 +161,18 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
     return () => {
       clearInterval(timer);
       fetchController.current?.abort();
+      fetchController.current = null;
     };
   }, [refresh]);
-  const connect = async (mode: 'external' | 'email' = 'external') => {
-    if (!capabilities || !signedIn)
-      throw new Error('Sign in and wait for wallet services to load.');
-    if (lock.current) throw new Error('A wallet action is already in progress.');
-    lock.current = true;
-    try {
-      const created = await connectSmartWallet(capabilities, mode);
-      if (active.current) {
-        setWallets((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-        setSelected(created.id);
-      }
-    } finally {
-      lock.current = false;
-    }
+  const retryWalletSetup = () => {
+    setupAttempt.current = '';
+    setSetupError('');
+    if (embedded.status === 'error') embedded.retry();
+    else void refresh();
   };
   const send = async (recipient: string, amount: string, key: string): Promise<Transfer> => {
-    if (!wallet || !capabilities || !balanceKnown)
-      throw new Error('Connect a wallet and refresh its balance before sending.');
+    if (!wallet || !walletReady || !capabilities || !balanceKnown)
+      throw new Error('Wait for your wallet setup and balance to finish before sending.');
     if (!capabilities.transfers_enabled)
       throw new Error('Transfers are temporarily unavailable on this network.');
     if (
@@ -156,7 +199,7 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
       });
       if (!active.current)
         throw new Error('Your session changed. Check transaction history before retrying.');
-      await signTransfer(wallet, capabilities, intent);
+      await signTransfer(wallet, capabilities, intent, embedded);
       const result = await request<Transfer>(`/transactions/${intent.id}`);
       if (active.current) await refresh();
       return result;
@@ -181,7 +224,10 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
           setBalanceKnown(false);
           setSelected(id);
         },
-        connect,
+        walletReady,
+        settingUp: settingUp || (!walletReady && embedded.status === 'loading'),
+        setupError: setupError || (!walletReady ? embedded.error : ''),
+        retryWalletSetup,
         send,
         refresh,
       }}
