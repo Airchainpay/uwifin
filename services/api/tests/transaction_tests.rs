@@ -1,8 +1,8 @@
 use serde_json::json;
 use uwifin_api::{
-    alchemy::{contains_transfer, receipt_state, ReceiptState},
+    alchemy::{ReceiptState, contains_transfer, receipt_state},
     payments::verify_signature,
-    transaction::{attach_signature, parse_amount, validate_prepared, TransactionStatus},
+    transaction::{TransactionStatus, attach_signature, parse_amount, validate_prepared},
 };
 #[test]
 fn exact_amounts_and_overflow() {
@@ -70,14 +70,20 @@ fn successful_http_is_not_settlement() {
 }
 #[test]
 fn webhook_signature_replay_and_tampering() {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     let secret = "synthetic-webhook-secret";
     let payload = br#"{"id":"evt_fixture"}"#;
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(b"1000.");
     mac.update(payload);
-    let signature = format!("t=1000,v1={}", hex::encode(mac.finalize().into_bytes()));
+    let digest = hex::encode(mac.finalize().into_bytes());
+    // Independent HMAC-SHA256 reference produced with Python's standard library.
+    assert_eq!(
+        digest,
+        "beeaf5bf7295f5bebca7c2443c3a90996312821cf8ee0be9ac7f7d90fa5fbd5d"
+    );
+    let signature = format!("t=1000,v1={digest}");
     assert!(verify_signature(secret, &signature, payload, 1001));
     assert!(!verify_signature(secret, &signature, payload, 1301));
     assert!(!verify_signature(secret, &signature, b"tampered", 1001));

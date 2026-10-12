@@ -1,16 +1,16 @@
 use crate::{
-    auth::{authorize, UserResponse},
+    auth::{UserResponse, authorize},
     error::ApiError,
     security::audit,
     state::AppState,
 };
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::HeaderMap,
-    Json,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn admin(state: &AppState, headers: &HeaderMap) -> Result<UserResponse, ApiError> {
     let user = authorize(state, headers).await?;
@@ -39,13 +39,27 @@ pub async fn list(
     }
     // Explicit projections keep credentials and signed payloads out of the admin API.
     let query = match section.as_str() {
-        "users" => "SELECT JSON_OBJECT('id',id,'email',email,'name',name,'status',status,'role',role,'created_at',created_at) FROM users ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?",
-        "transactions" => "SELECT JSON_OBJECT('id',id,'user_id',user_id,'network',network,'amount_atomic',CAST(amount_atomic AS CHAR),'status',status,'tx_hash',tx_hash,'error_code',error_code,'updated_at',updated_at) FROM transactions ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?",
-        "payments" => "SELECT JSON_OBJECT('id',id,'user_id',user_id,'status',status,'provider_reference',provider_reference,'fiat_currency',fiat_currency,'fiat_amount_minor',CAST(fiat_amount_minor AS CHAR),'created_at',created_at) FROM payments ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?",
-        "events" => "SELECT JSON_OBJECT('id',id,'user_id',user_id,'event_type',event_type,'request_id',request_id,'created_at',created_at) FROM audit_events ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?",
-        "assets" => "SELECT JSON_OBJECT('id',id,'symbol',symbol,'network',network,'contract_address',contract_address,'is_active',is_active) FROM assets ORDER BY network,id LIMIT 50 OFFSET ?",
-        "networks" => "SELECT JSON_OBJECT('id',id,'is_active',is_active) FROM networks ORDER BY id LIMIT 50 OFFSET ?",
-        "errors" => "SELECT JSON_OBJECT('id',id,'user_id',user_id,'status',status,'error_code',error_code,'updated_at',updated_at) FROM transactions WHERE status = 'FAILED' OR (status IN ('SUBMITTED','PENDING') AND submitted_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)) ORDER BY updated_at,id LIMIT 50 OFFSET ?",
+        "users" => {
+            "SELECT JSON_OBJECT('id',id,'email',email,'name',name,'status',status,'role',role,'created_at',created_at) FROM users ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?"
+        }
+        "transactions" => {
+            "SELECT JSON_OBJECT('id',id,'user_id',user_id,'network',network,'amount_atomic',CAST(amount_atomic AS CHAR),'status',status,'tx_hash',tx_hash,'error_code',error_code,'updated_at',updated_at) FROM transactions ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?"
+        }
+        "payments" => {
+            "SELECT JSON_OBJECT('id',id,'user_id',user_id,'status',status,'provider_reference',provider_reference,'fiat_currency',fiat_currency,'fiat_amount_minor',CAST(fiat_amount_minor AS CHAR),'created_at',created_at) FROM payments ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?"
+        }
+        "events" => {
+            "SELECT JSON_OBJECT('id',id,'user_id',user_id,'event_type',event_type,'request_id',request_id,'created_at',created_at) FROM audit_events ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?"
+        }
+        "assets" => {
+            "SELECT JSON_OBJECT('id',id,'symbol',symbol,'network',network,'contract_address',contract_address,'is_active',is_active) FROM assets ORDER BY network,id LIMIT 50 OFFSET ?"
+        }
+        "networks" => {
+            "SELECT JSON_OBJECT('id',id,'is_active',is_active) FROM networks ORDER BY id LIMIT 50 OFFSET ?"
+        }
+        "errors" => {
+            "SELECT JSON_OBJECT('id',id,'user_id',user_id,'status',status,'error_code',error_code,'updated_at',updated_at) FROM transactions WHERE status = 'FAILED' OR (status IN ('SUBMITTED','PENDING') AND submitted_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)) ORDER BY updated_at,id LIMIT 50 OFFSET ?"
+        }
         _ => return Err(ApiError::new("NOT_FOUND", "Unknown admin section.")),
     };
     let rows: Vec<String> = sqlx::query_scalar(query)

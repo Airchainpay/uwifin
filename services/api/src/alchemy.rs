@@ -1,5 +1,5 @@
 use crate::{error::ApiError, state::AppState, wallet_validation::validate_wallet_address};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 async fn rpc(
     state: &AppState,
     url: Option<&str>,
@@ -24,7 +24,10 @@ async fn rpc(
     }
     let body: Value = response.json().await.map_err(|_| ApiError::unavailable())?;
     if body.get("error").is_some() {
-        return Err(ApiError::new("PROVIDER_REJECTED", "The wallet provider could not complete this request. Check your wallet, network and sponsorship eligibility."));
+        return Err(ApiError::new(
+            "PROVIDER_REJECTED",
+            "The wallet provider could not complete this request. Check your wallet, network and sponsorship eligibility.",
+        ));
     }
     body.get("result")
         .cloned()

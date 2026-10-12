@@ -1,6 +1,6 @@
 use crate::{auth::authorize, error::ApiError, security::audit, state::AppState};
-use axum::{body::Bytes, extract::State, http::HeaderMap, Json};
-use hmac::{Hmac, Mac};
+use axum::{Json, body::Bytes, extract::State, http::HeaderMap};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 pub fn verify_signature(secret: &str, signature: &str, payload: &[u8], now: i64) -> bool {
