@@ -20,9 +20,51 @@ Official provider docs and installed SDK source were inspected for request/respo
 
 `@privy-io/react-auth` **3.48.1** replaces the deprecated `@account-kit/signer`. Privy custom JWT authentication preserves UwiFin's email/password login and provisions embedded EVM/Solana signers. `jose` **6.2.12** signs five-minute ES256 tokens and exposes a public JWKS. Private wallet keys are not stored by the API. Browser loading is deferred through a client-only provider.
 
-The direct viem dependency is **2.56.5**, matching Privy's declared version and satisfying Alchemy's peer range. Mixing it with 2.57.4 caused incompatible recursive account types. `@solana/kit` **8.4.0**, token **0.17.0**, system **0.15.0**, and memo **0.15.0** satisfy the Alchemy SDK's Solana peers. Privy's optional transitive x402/WalletConnect dependencies retain peer warnings; the application does not use these flows. Validate live embedded signing with the configured Privy account before deployment.
+The direct viem dependency is **2.56.5**, matching Privy's declared version and satisfying Alchemy's peer range. Mixing it with 2.57.4 caused incompatible recursive account types. `@solana/kit` **8.4.0**, token **0.17.0**, system **0.15.0**, and memo **0.15.0** satisfy the Alchemy SDK's Solana peers. Validate live embedded signing with the configured Privy account before deployment.
 
 The existing `js-cookie` 3.0.7 and `jayson` 5.0.0 overrides remain. Rerun the production audit for each release; older zero-advisory results do not cover this new dependency tree.
+
+### Install warnings and package manager (2026-10-12)
+
+The npm registry's `latest` tag for `@privy-io/react-auth` is **3.48.1**. Updating
+Privy does not currently remove its obsolete transitive wallet connectors.
+Its `x402@0.7.3` dependency declares `wagmi`, which pulls in the deprecated
+MetaMask SDK, `@paulmillr/qr`, Safe gateway SDK, and WalletConnect 2.21.0/2.21.1.
+
+The scoped override `"x402@0.7.3>wagmi": "-"` removes that unused dependency.
+Privy's published JavaScript imports only `x402/client`; its declarations also
+reference `x402/types`. Inspection of both the CommonJS and ESM distributions
+found no wagmi imports in those entry points or their shared chunks. The wagmi
+code belongs to x402's prebuilt paywall, which UwiFin does not use. This uses
+[pnpm's documented removal of unused dependencies](https://pnpm.io/10.x/settings#overrides).
+Keep the override restricted to the inspected x402 version, and recheck the
+package graph when upgrading Privy/x402 or adding a paywall. Privy's own
+WalletConnect 2.22.4 dependencies remain; the registry does not mark them deprecated.
+
+`npm install` ignores `pnpm-lock.yaml` and `pnpm.overrides`, including the security
+fixes below. Use **pnpm 10.34.5**. Root `devEngines` makes current npm reject the
+wrong manager before dependency resolution; install lifecycle guards at the root
+and web workspace provide a fallback for older npm. These guards are installation
+guidance, not a security boundary (`--ignore-scripts` can bypass lifecycle checks).
+See [cleanup instructions](../README.md#dependency-installation) after using npm.
+
+### Remaining development-tool constraints
+
+The full audit reports [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+in `braces@3.0.3`, reached through Next's ESLint plugin → fast-glob → micromatch.
+The registry lists **3.0.3** as the latest braces release and reports no patched
+version. Next's ESLint configuration **16.4.0** is also current. The affected
+glob parser runs during linting; production dependency audits exclude this path.
+The advisory is not suppressed, and a full audit remains a failing check.
+
+ESLint **9.39.5** is deprecated upstream. ESLint **10.12.0** is current, but the
+latest `eslint-plugin-react` **7.37.5** and `eslint-plugin-import` **2.32.0** still
+declare peer support only through ESLint 9. Keep the compatible version until
+those plugins support ESLint 10; do not force an unsupported major upgrade.
+
+Version/deprecation and peer-range evidence was read from the published npm
+metadata (`pnpm view <package>@latest version dependencies peerDependencies
+deprecated --json`). New releases may change these constraints.
 
 ## Rust audit findings (2026-10-10)
 

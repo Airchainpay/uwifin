@@ -34,7 +34,7 @@ UwiFin is a Web3-enabled financial application for simple cross-border transacti
 3. Install workspace dependencies:
 
    ```bash
-   pnpm install
+   pnpm install --frozen-lockfile
    ```
 
 4. Run the web app:
@@ -47,6 +47,39 @@ UwiFin is a Web3-enabled financial application for simple cross-border transacti
    ```bash
    cargo run --manifest-path services/api/Cargo.toml
    ```
+
+## Dependency installation
+
+Use **pnpm 10.34.5** from the repository root. The lockfile and security overrides
+are configured for pnpm. `npm install` ignores both and can install vulnerable
+versions that are excluded from the tested dependency tree. Install checks reject
+other package managers; current npm versions reject them before installing packages.
+
+If pnpm is unavailable, invoke it with npx **from outside the repository**:
+
+```bash
+cd ~
+npx pnpm@10.34.5 --dir ./uwifin install --frozen-lockfile
+```
+
+Current npm also applies the package-manager check to npx when run inside the
+workspace, so keep the npx working directory outside it.
+
+After accidentally running npm, stop the web server and remove the generated
+dependency directories and npm lockfiles, then restore the pnpm installation:
+
+```bash
+cd ~/uwifin
+rm -rf node_modules apps/web/node_modules apps/web/.next
+rm -f package-lock.json apps/web/package-lock.json
+cd ~
+npx pnpm@10.34.5 --dir ./uwifin install --frozen-lockfile
+npx pnpm@10.34.5 --dir ./uwifin dev:web
+```
+
+Check production dependencies with `pnpm audit --prod`. A full `pnpm audit` also
+includes development tools; see [dependency decisions](docs/dependencies.md) for
+the remaining upstream tooling advisory and compatibility constraints.
 
 ## Code formatting
 

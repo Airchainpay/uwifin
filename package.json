@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "preinstall": "node scripts/check-package-manager.mjs",
     "format": "pnpm format:web && pnpm format:api",
     "format:check": "pnpm format:web:check && pnpm format:api:check",
     "format:web": "prettier --write . --ignore-path .gitignore --ignore-path .prettierignore",
@@ -23,13 +24,21 @@
     "test:web": "pnpm --dir apps/web test"
   },
   "packageManager": "pnpm@10.34.5",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "10.34.5",
+      "onFail": "error"
+    }
+  },
   "pnpm": {
     "overrides": {
       "jayson": "5.0.0",
       "js-cookie": "3.0.7",
       "ws@>=8 <8.21.0": "8.21.0",
       "uuid@>=8 <11.1.1": "11.1.1",
-      "decode-uri-component@<0.5.0": "0.5.0"
+      "decode-uri-component@<0.5.0": "0.5.0",
+      "x402@0.7.3>wagmi": "-"
     }
   },
   "devDependencies": {
