@@ -298,8 +298,10 @@ do not expose all API routes unrestricted. The repository does not include this
 restricted ingress configuration, so configure and verify it before using an
 external BFF.
 
-For optional Alchemy email OTP, set the separate origin-restricted
-`NEXT_PUBLIC_ALCHEMY_SIGNER_KEY` before the web build, and enable email OTP in Alchemy.
+For automatic embedded wallets, configure Privy custom JWT authentication, set
+`NEXT_PUBLIC_PRIVY_APP_ID` before building, and supply the server-only P-256
+`PRIVY_JWT_PRIVATE_KEY`, `PRIVY_JWT_KEY_ID`, and `APP_ENV=production`.
+See [Privy activation](wallet-operations.md#privy-activation).
 
 ### 6. Enable Stripe only when eligible
 

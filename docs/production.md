@@ -6,10 +6,10 @@ Run one Rust API instance and one Next.js web process, with MariaDB 11.4. Rate l
 
 1. Run `.github/workflows/ci.yml` checks. Review dependency advisories and the financial flow code before real funds.
 2. Install with `pnpm install --frozen-lockfile`; build with `pnpm build:web` and `cargo build --locked --release --manifest-path services/api/Cargo.toml` using Rust 1.90.0 and Node 24.14.1.
-3. Supply environment secrets privately. Set `APP_ENV=production`, HTTPS `APP_BASE_URL`, production `DATABASE_URL`, Alchemy Wallet API/Gas Manager configuration, and eligible Stripe configuration. Never use development Compose passwords in production. Optional `NEXT_PUBLIC_ALCHEMY_SIGNER_KEY` is a separate browser key restricted to the application origin; enable **email OTP** in the Alchemy dashboard before the frontend build.
+3. Supply environment secrets privately. Set `APP_ENV=production`, HTTPS `APP_BASE_URL`, production `DATABASE_URL`, Alchemy Wallet API/Gas Manager configuration, and eligible Stripe configuration. Never use development Compose passwords in production. Configure Privy custom JWT authentication and embedded Ethereum/Solana wallets; set `NEXT_PUBLIC_PRIVY_APP_ID` before building and server-only `PRIVY_JWT_PRIVATE_KEY`, `PRIVY_JWT_KEY_ID` and `APP_ENV=production` in the frontend environment. See the wallet activation guide.
 4. Back up MariaDB before deployment. API startup applies versioned migrations before listening. Start `services/api/target/release/uwifin-api`, then `pnpm --dir apps/web start --hostname 127.0.0.1`. Run processes under the host's service manager with restart-on-failure. Preserve environment secrets outside Git.
 5. Put a managed HTTPS ingress in front. Forward the web entrypoint to Next.js and `/api/v1/payments/stripe/webhook` directly to Rust, preserving the raw body and Stripe signature. Set request timeout above 25 seconds. Only expose process health/readiness as needed by your monitor.
-6. Verify `/health`, `/ready`, account flows, a sponsored Alchemy testnet transfer, and the approved Stripe test-mode flow. Alchemy Signer email delivery, account creation, recovery and signing must be tested with the approved origin. No local fixture substitutes for these provider checks.
+6. Verify `/health`, `/ready`, account flows, a sponsored Alchemy testnet transfer, and the approved Stripe test-mode flow. Privy signup, returning-user wallet restoration, logout, recovery and signing must be tested with the approved origin. No local fixture substitutes for these provider checks.
 
 The production hostname, TLS certificate, secret manager, Stripe approval, Alchemy policy and deployment monitoring account must be supplied by the operator. Repository code cannot certify these external settings. PHP payout is intentionally unavailable until a licensed, eligible partner is integrated.
 
@@ -59,7 +59,7 @@ The repository contains the P0 identity, wallet, transfer, history, admin, and o
 
 Outstanding acceptance gates:
 
-- Alchemy Base Sepolia wallet creation, real signed transfers, denied sponsorship, provider interruption, receipt verification, and email OTP must run with an approved application, origin and constrained Gas Manager policy.
+- Alchemy Base Sepolia wallet creation, real signed transfers, denied sponsorship, provider interruption, receipt verification, and Privy custom authentication must run with an approved application, origin and constrained Gas Manager policy.
 - Stripe Crypto Onramp requires approved test-mode access and confirmation of the actual country/currency/Base USDC combination. The official webhook SDK requirement is unresolved for the Rust stack; see [dependency decisions](dependencies.md#stripe-sdk-requirement-discrepancy).
 - The Rust advisory scan still fails for transitive `rsa` 0.9.10 (RUSTSEC-2023-0071, no patched version listed). SQLx uses public-key encryption in its database authentication path; this does not convert the scan into a pass. Preserve TLS/trusted database requirements and review upstream remediation before release.
 - HTTPS ingress, secret management, deployed monitoring, daily backup scheduling/off-host copies, and a restoration drill require an operator's environment. Repository scripts and local checks alone do not certify these controls or the availability target.

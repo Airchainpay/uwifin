@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { FinanceProvider } from '@/contexts/FinanceContext';
+import { EmbeddedWalletProvider } from '@/contexts/EmbeddedWalletContext';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -19,9 +20,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <div id="email-wallet-frame" hidden />
         <AuthProvider>
-          <FinanceProvider>{children}</FinanceProvider>
+          <EmbeddedWalletProvider>
+            <FinanceProvider>{children}</FinanceProvider>
+          </EmbeddedWalletProvider>
         </AuthProvider>
       </body>
     </html>

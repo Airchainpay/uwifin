@@ -106,6 +106,7 @@ const fixture = createServer(async (req, res) => {
           accountRequests++;
           assert.equal(rpc.params[0].signerAddress.toLowerCase(), signer.address.toLowerCase());
           assert.equal(rpc.params[0].creationHint.accountType, 'sma-b');
+          assert.equal(rpc.params[0].creationHint.createAdditional, undefined);
           result = { accountAddress: address, id: 'fixture_account' };
           break;
         case 'wallet_prepareCalls':

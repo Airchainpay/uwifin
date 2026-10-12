@@ -79,4 +79,4 @@ See [Wallet operation and activation](docs/wallet-operations.md) for environment
 
 ## USDC networks
 
-Base mainnet is the default, with Ethereum mainnet and Solana mainnet available on the wallet page. Only native USDC is supported. Set per-network RPC credentials and gas sponsorship policies in `.env`; see [wallet and network setup](docs/wallet-operations.md). Solana requires a connected Solana wallet and an approved Alchemy policy covering fees and account rent; users do not need SOL. Selecting another network does not move funds between chains.
+Base mainnet is the default, with Ethereum mainnet and Solana mainnet available on the wallet page. Only native USDC is supported. Set per-network RPC credentials and gas sponsorship policies in `.env`; see [wallet and network setup](docs/wallet-operations.md). Privy creates embedded signing wallets automatically after signup/login; configure its custom JWT authentication using the linked guide. Solana requires an approved Alchemy policy covering fees and account rent; users do not need SOL. Selecting another network does not move funds between chains.

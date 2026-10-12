@@ -1,8 +1,9 @@
 'use client';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useFinance } from '@/contexts/FinanceContext';
 import { request } from '@/lib/api';
 import { decimalAmount } from '@/lib/money';
+import type { OnrampSession, OnrampUIEventListener } from '@stripe/crypto';
 type Payment = {
   id: string;
   status: string;
@@ -10,21 +11,29 @@ type Payment = {
   fiat_amount_minor: string;
   crypto_amount_atomic: string;
 };
-type Session = { client_secret: string; publishable_key: string };
-function StripePurchase({ session }: { session: Session }) {
+type Session = { id: string; client_secret: string; publishable_key: string };
+function StripePurchase({ session, onUpdate }: { session: Session; onUpdate: () => void }) {
   const container = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let disposed = false;
     const target = container.current;
+    let checkout: OnrampSession | undefined;
+    const updated: OnrampUIEventListener<'onramp_session_updated'> = () => {
+      // UI events are only refresh hints. The API verifies settlement with Stripe.
+      if (!disposed) onUpdate();
+    };
+    setError('');
     void (async () => {
       try {
         const { loadStripeOnramp } = await import('@stripe/crypto/pure');
         const stripe = await loadStripeOnramp(session.publishable_key);
         if (!disposed && target) {
           if (!stripe) throw new Error('Stripe could not be loaded.');
-          stripe
+          checkout = stripe
             .createSession({ clientSecret: session.client_secret, appearance: { theme: 'light' } })
+            .addEventListener('onramp_session_updated', updated)
             .mount(target);
         }
       } catch {
@@ -34,14 +43,18 @@ function StripePurchase({ session }: { session: Session }) {
     })();
     return () => {
       disposed = true;
+      checkout?.removeEventListener('onramp_session_updated', updated);
       target?.replaceChildren();
     };
-  }, [session]);
+  }, [session, attempt, onUpdate]);
   return (
     <>
       {error && (
         <p role="alert" className="field-error">
           {error}
+          <button className="button secondary" onClick={() => setAttempt((value) => value + 1)}>
+            Reload this checkout
+          </button>
         </p>
       )}
       <div ref={container} />
@@ -49,7 +62,12 @@ function StripePurchase({ session }: { session: Session }) {
   );
 }
 export function PaymentsPage() {
-  const { wallet, capabilities, networkLabel } = useFinance();
+  const { wallet } = useFinance();
+  // Discard client secrets and in-flight UI state when the selected destination changes.
+  return <WalletPayments key={wallet?.id || 'no-wallet'} />;
+}
+function WalletPayments() {
+  const { wallet, capabilities, networkLabel, refresh: refreshWallet } = useFinance();
   const [amount, setAmount] = useState('100');
   const [currency, setCurrency] = useState('USD');
   const [session, setSession] = useState<Session | null>(null);
@@ -57,23 +75,46 @@ export function PaymentsPage() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const key = useRef<{ fingerprint: string; value: string } | null>(null);
+  const active = useRef(true);
+  const controller = useRef<AbortController | null>(null);
+  const refreshPayments = useCallback(async () => {
+    if (controller.current) return;
+    const current = new AbortController();
+    controller.current = current;
+    try {
+      const result = await request<{ payments: Payment[] }>('/payments', {
+        signal: current.signal,
+      });
+      if (active.current && !current.signal.aborted) setPayments(result.payments);
+    } catch {
+      if (active.current && !current.signal.aborted)
+        setError('Payment history is temporarily unavailable.');
+    } finally {
+      if (controller.current === current) controller.current = null;
+    }
+  }, []);
+  const onCheckoutUpdate = useCallback(() => {
+    void refreshPayments();
+    void refreshWallet();
+  }, [refreshPayments, refreshWallet]);
   useEffect(() => {
-    const controller = new AbortController();
-    const refresh = () =>
-      request<{ payments: Payment[] }>('/payments', { signal: controller.signal })
-        .then((result) => setPayments(result.payments))
-        .catch(() => {
-          if (!controller.signal.aborted) setError('Payment history is temporarily unavailable.');
-        });
-    void refresh();
+    active.current = true;
+    void refreshPayments();
     const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 15_000);
+      if (!document.hidden) void refreshPayments();
+    }, 5_000);
     return () => {
-      controller.abort();
+      active.current = false;
+      controller.current?.abort();
+      controller.current = null;
       clearInterval(timer);
     };
-  }, []);
+  }, [refreshPayments]);
+  const payment = payments.find((item) => item.id === session?.id);
+  const finished = payment && ['confirmed', 'failed'].includes(payment.status);
+  useEffect(() => {
+    if (payment?.status === 'confirmed') void refreshWallet();
+  }, [payment?.status, refreshWallet]);
   const buy = async (event: FormEvent) => {
     event.preventDefault();
     if (!wallet || busy) return;
@@ -85,17 +126,20 @@ export function PaymentsPage() {
       const fingerprint = `${wallet.id}:${currency}:${amount}`;
       if (key.current?.fingerprint !== fingerprint)
         key.current = { fingerprint, value: crypto.randomUUID() };
-      setSession(
-        await request<Session>('/payments', {
-          method: 'POST',
-          headers: { 'Idempotency-Key': key.current.value },
-          body: JSON.stringify({ wallet_id: wallet.id, amount, currency }),
-        }),
-      );
+      const created = await request<Session>('/payments', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': key.current.value },
+        body: JSON.stringify({ wallet_id: wallet.id, amount, currency }),
+      });
+      if (active.current) {
+        setSession(created);
+        void refreshPayments();
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to start purchase.');
+      if (active.current)
+        setError(err instanceof Error ? err.message : 'Unable to start purchase.');
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   };
   return (
@@ -110,7 +154,7 @@ export function PaymentsPage() {
         <section className="card flow-card">
           <h2>Stripe on-ramp</h2>
           <p>
-            Destination: {wallet?.address || 'Connect a wallet first'} · {networkLabel}
+            Destination: {wallet?.address || 'Finish wallet setup first'} · {networkLabel}
           </p>
           <p>Mode: {capabilities?.stripe_mode || 'Unavailable'}</p>
           {!capabilities?.onramp_enabled && (
@@ -125,7 +169,28 @@ export function PaymentsPage() {
             </p>
           )}
           {session ? (
-            <StripePurchase session={session} />
+            <>
+              <p role="status">
+                {payment?.status === 'confirmed'
+                  ? 'Purchase complete. Stripe has sent your USDC to this wallet.'
+                  : payment?.status === 'failed'
+                    ? 'This purchase was rejected. You can start a new purchase.'
+                    : 'Complete checkout below. Payment status updates automatically after Stripe verifies it.'}
+              </p>
+              {!finished && <StripePurchase session={session} onUpdate={onCheckoutUpdate} />}
+              {finished && (
+                <button
+                  className="button primary"
+                  onClick={() => {
+                    key.current = null;
+                    setSession(null);
+                    setError('');
+                  }}
+                >
+                  Start a new purchase
+                </button>
+              )}
+            </>
           ) : (
             <form className="stacked-form" onSubmit={buy}>
               <label htmlFor="buy-amount">Purchase amount</label>

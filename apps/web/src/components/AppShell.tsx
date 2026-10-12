@@ -35,7 +35,7 @@ const navigation = [
   { name: 'Add money', href: '/payments', icon: CreditCard },
 ];
 export function AppShell({ children }: { children: ReactNode }) {
-  const { networkLabel } = useFinance();
+  const { networkLabel, settingUp, setupError, walletReady, retryWalletSetup } = useFinance();
   const pathname = usePathname();
   const router = useRouter();
   const { user, loading, logout } = useAuth();
@@ -259,7 +259,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </span>
                     <p>
                       <strong>Welcome to UwiFin</strong>
-                      <small>Connect a wallet to view your balance and send USDC.</small>
+                      <small>
+                        Your wallet is created automatically. Visit My wallet to view its address
+                        and balance.
+                      </small>
                     </p>
                   </div>
                   <Link href="/transactions">
@@ -321,6 +324,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
         <main id="main-content" className="main-content">
+          {!walletReady && settingUp && (
+            <p className="info-note" role="status">
+              Preparing your wallet automatically… Your address will appear when setup finishes.
+            </p>
+          )}
+          {!walletReady && setupError && (
+            <div className="error-banner" role="alert">
+              <p>{setupError}</p>
+              <button className="text-link" onClick={retryWalletSetup}>
+                Retry wallet setup
+              </button>
+            </div>
+          )}
           {children}
         </main>
         <footer className="app-footer">
