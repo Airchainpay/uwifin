@@ -130,9 +130,14 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
   const send = async (recipient: string, amount: string, key: string): Promise<Transfer> => {
     if (!wallet || !capabilities || !balanceKnown)
       throw new Error('Connect a wallet and refresh its balance before sending.');
-    if (!capabilities.sponsorship_enabled)
-      throw new Error('Sponsored transfers are temporarily unavailable.');
-    if (!validateAddress(recipient) || recipient.toLowerCase() === wallet.address.toLowerCase())
+    if (!capabilities.transfers_enabled)
+      throw new Error('Transfers are temporarily unavailable on this network.');
+    if (
+      !validateAddress(recipient, wallet.network) ||
+      (wallet.network === 'solana-mainnet'
+        ? recipient === wallet.address
+        : recipient.toLowerCase() === wallet.address.toLowerCase())
+    )
       throw new Error('Enter a valid recipient other than your own wallet.');
     if (parseAmount(amount) > BigInt(balance)) throw new Error('Insufficient USDC balance.');
     if (lock.current) throw new Error('A wallet action is already in progress.');
@@ -168,11 +173,7 @@ function AccountFinance({ signedIn, children }: { signedIn: boolean; children: R
         wallets,
         wallet,
         capabilities,
-        networkLabel: capabilities
-          ? capabilities.network === 'base'
-            ? 'Base'
-            : 'Base Sepolia · Testnet'
-          : 'Network unavailable',
+        networkLabel: capabilities?.network_label || 'Network unavailable',
         transfers,
         loading,
         error,

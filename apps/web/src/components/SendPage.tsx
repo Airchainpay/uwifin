@@ -31,11 +31,16 @@ export function SendPage({
     try {
       if (!wallet || !balanceKnown)
         throw new Error('Connect a wallet and refresh its balance first.');
-      if (!validateAddress(recipient) || recipient.toLowerCase() === wallet.address.toLowerCase())
+      if (
+        !validateAddress(recipient, wallet.network) ||
+        (wallet.network === 'solana-mainnet'
+          ? recipient === wallet.address
+          : recipient.toLowerCase() === wallet.address.toLowerCase())
+      )
         throw new Error('Enter a valid recipient other than your own wallet.');
       const atomic = parseAmount(amount);
       if (atomic > BigInt(balance)) throw new Error('Insufficient USDC balance.');
-      const storageKey = `uwifin-intent:${user?.id}:${wallet.id}:${recipient.toLowerCase()}:${atomic}`;
+      const storageKey = `uwifin-intent:${user?.id}:${wallet.id}:${wallet.network === 'solana-mainnet' ? recipient : recipient.toLowerCase()}:${atomic}`;
       intentStorageKey.current = storageKey;
       key.current = sessionStorage.getItem(storageKey) || crypto.randomUUID();
       sessionStorage.setItem(storageKey, key.current);
@@ -147,12 +152,18 @@ export function SendPage({
                 </div>
                 <div>
                   <dt>Network fee</dt>
-                  <dd>Sponsored if eligible</dd>
+                  <dd>
+                    {capabilities?.family === 'solana'
+                      ? 'Network fee and account rent sponsored'
+                      : 'Sponsored if eligible'}
+                  </dd>
                 </div>
               </dl>
               <p className="info-note">
-                The transfer will only proceed if gas sponsorship is approved. Your wallet will ask
-                you to sign. Blockchain transfers cannot be reversed.
+                {capabilities?.family === 'solana'
+                  ? 'Alchemy sponsorship covers the network fee and recipient token account rent. You do not need SOL.'
+                  : 'The transfer proceeds only if gas sponsorship is approved.'}{' '}
+                Your wallet will ask you to sign. Blockchain transfers cannot be reversed.
               </p>
               {error && (
                 <p role="alert" className="field-error">
@@ -183,7 +194,7 @@ export function SendPage({
                 className="input"
                 value={recipient}
                 onChange={(event) => setRecipient(event.target.value.trim())}
-                placeholder="0x…"
+                placeholder={capabilities?.family === 'solana' ? 'Solana wallet address' : '0x…'}
                 required
               />
               <label htmlFor="amount">Amount in USDC</label>
@@ -205,12 +216,12 @@ export function SendPage({
               )}
               <button
                 className="button primary"
-                disabled={!wallet || !balanceKnown || !capabilities?.sponsorship_enabled}
+                disabled={!wallet || !balanceKnown || !capabilities?.transfers_enabled}
               >
                 Review transfer
               </button>
-              {!capabilities?.sponsorship_enabled && (
-                <p>Sponsored transfers are currently unavailable.</p>
+              {!capabilities?.transfers_enabled && (
+                <p>Transfers are currently unavailable on this network.</p>
               )}
             </form>
           )}
@@ -218,7 +229,7 @@ export function SendPage({
         <aside className="flow-side">
           <h2>Before you send</h2>
           <p>Verify the full recipient address and network with the person receiving your funds.</p>
-          <p>Use USDC on {networkLabel}. Testnet tokens have no monetary value.</p>
+          <p>Use native USDC on {networkLabel}. The recipient must use the same network.</p>
           <p>UwiFin never asks for your seed phrase.</p>
         </aside>
       </div>

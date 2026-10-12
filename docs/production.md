@@ -1,6 +1,6 @@
 # MVP operations
 
-Run one Rust API instance and one Next.js web process, with MariaDB 11.4. Rate limits and reconciliation are in-process. Configure edge rate limiting before Next.js; never expose an unrestricted internal API origin to browsers. Start with Base Sepolia and test funds.
+Run one Rust API instance and one Next.js web process, with MariaDB 11.4. Rate limits and reconciliation are in-process. Configure edge rate limiting before Next.js; never expose an unrestricted internal API origin to browsers. The default is now Base mainnet with real USDC; explicitly choose `ALCHEMY_NETWORK=base-sepolia` and a testnet policy for EVM testing. See [network activation](wallet-operations.md) for Base, Ethereum and Solana settings.
 
 ## Release
 

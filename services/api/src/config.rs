@@ -1,6 +1,7 @@
 /// Secrets are intentionally neither Debug nor Serialize.
 #[derive(Clone)]
 pub struct Config {
+    pub providers: Vec<crate::networks::ProviderConfig>,
     pub app_env: String,
     pub app_base_url: String,
     pub database_url: String,
@@ -27,12 +28,8 @@ impl Config {
         };
         let app_env = value("APP_ENV").unwrap_or_else(|| "development".into());
         let app_base_url = value("APP_BASE_URL").unwrap_or_else(|| "http://localhost:3000".into());
-        let network = value("ALCHEMY_NETWORK").unwrap_or_else(|| "base-sepolia".into());
-        let (chain_id, usdc_address) = match network.as_str() {
-            "base" => (8453, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
-            "base-sepolia" => (84532, "0x036CbD53842c5426634e7929541eC2318f3dCF7e"),
-            _ => anyhow::bail!("Only Base or Base Sepolia may be configured"),
-        };
+        let network = value("ALCHEMY_NETWORK").unwrap_or_else(|| "base".into());
+        let (chain_id, usdc_address, _) = crate::networks::details(&network)?;
         if app_env == "production" {
             anyhow::ensure!(
                 app_base_url.starts_with("https://"),
@@ -43,19 +40,72 @@ impl Config {
                 "Production requires DATABASE_URL"
             );
         }
-        let alchemy_key = value("ALCHEMY_API_KEY");
-        let alchemy_rpc_url = value("ALCHEMY_RPC_URL").or_else(|| {
-            alchemy_key
-                .as_ref()
-                .map(|key| format!("https://{network}.g.alchemy.com/v2/{key}"))
-        });
-        let alchemy_wallet_url = value("ALCHEMY_WALLET_URL")
-            .or_else(|| alchemy_key.map(|key| format!("https://api.g.alchemy.com/v2/{key}")));
+        let mut networks = crate::networks::MAINNETS.to_vec();
+        if network == "base-sepolia" {
+            networks.push("base-sepolia");
+        }
+        let mut providers = Vec::new();
+        for name in networks {
+            let prefix = match name {
+                "base" => "BASE",
+                "eth-mainnet" => "ETHEREUM",
+                "solana-mainnet" => "SOLANA",
+                _ => "BASE_SEPOLIA",
+            };
+            let key =
+                value(&format!("{prefix}_ALCHEMY_API_KEY")).or_else(|| value("ALCHEMY_API_KEY"));
+            // Legacy overrides apply only to the default network, never to another chain.
+            let rpc_url = value(&format!("{prefix}_RPC_URL"))
+                .or_else(|| {
+                    if name == network {
+                        value("ALCHEMY_RPC_URL")
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    key.as_ref()
+                        .map(|key| crate::networks::alchemy_rpc_url(name, key))
+                });
+            let wallet_url = if name == "solana-mainnet" {
+                None
+            } else {
+                value(&format!("{prefix}_WALLET_URL"))
+                    .or_else(|| {
+                        if name == network {
+                            value("ALCHEMY_WALLET_URL")
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| key.map(|key| format!("https://api.g.alchemy.com/v2/{key}")))
+            };
+            let policy_id = value(&format!("{prefix}_POLICY_ID")).or_else(|| {
+                if name == network {
+                    value("ALCHEMY_POLICY_ID")
+                } else {
+                    None
+                }
+            });
+            providers.push(crate::networks::ProviderConfig {
+                network: name.into(),
+                rpc_url,
+                wallet_url,
+                policy_id,
+            });
+        }
+        let selected = providers
+            .iter()
+            .find(|p| p.network == network)
+            .expect("configured network");
+        let alchemy_rpc_url = selected.rpc_url.clone();
+        let alchemy_wallet_url = selected.wallet_url.clone();
+        let alchemy_policy_id = selected.policy_id.clone();
         let stripe_api_url =
             value("STRIPE_API_URL").unwrap_or_else(|| "https://api.stripe.com".into());
-        for endpoint in alchemy_rpc_url
+        for endpoint in providers
             .iter()
-            .chain(alchemy_wallet_url.iter())
+            .flat_map(|p| p.rpc_url.iter().chain(p.wallet_url.iter()))
             .chain(std::iter::once(&stripe_api_url))
         {
             let parsed = reqwest::Url::parse(endpoint)?;
@@ -103,6 +153,7 @@ impl Config {
             "MAX_TRANSFER_ATOMIC must be positive"
         );
         Ok(Self {
+            providers,
             database_url: value("DATABASE_URL")
                 .unwrap_or_else(|| "mysql://uwifin:uwifin@localhost:3306/uwifin".into()),
             app_env,
@@ -112,7 +163,7 @@ impl Config {
             usdc_address: usdc_address.into(),
             alchemy_rpc_url,
             alchemy_wallet_url,
-            alchemy_policy_id: value("ALCHEMY_POLICY_ID"),
+            alchemy_policy_id,
             stripe_api_url,
             stripe_secret_key,
             stripe_publishable_key,
@@ -123,8 +174,30 @@ impl Config {
             transfer_limit_atomic,
         })
     }
+    pub fn for_network(&self, network: &str) -> anyhow::Result<Self> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.network == network)
+            .ok_or_else(|| anyhow::anyhow!("Network is not enabled in this deployment"))?;
+        let (chain_id, usdc_address, _) = crate::networks::details(network)?;
+        let mut config = self.clone();
+        config.network = network.into();
+        config.chain_id = chain_id;
+        config.usdc_address = usdc_address.into();
+        config.alchemy_rpc_url = provider.rpc_url.clone();
+        config.alchemy_wallet_url = provider.wallet_url.clone();
+        config.alchemy_policy_id = provider.policy_id.clone();
+        Ok(config)
+    }
+    pub fn is_solana(&self) -> bool {
+        self.network == "solana-mainnet"
+    }
+    pub fn transfers_enabled(&self) -> bool {
+        self.wallet_enabled() && self.alchemy_policy_id.is_some()
+    }
     pub fn wallet_enabled(&self) -> bool {
-        self.alchemy_rpc_url.is_some() && self.alchemy_wallet_url.is_some()
+        self.alchemy_rpc_url.is_some() && (self.is_solana() || self.alchemy_wallet_url.is_some())
     }
     pub fn onramp_enabled(&self) -> bool {
         self.stripe_onramp_enabled

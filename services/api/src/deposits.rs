@@ -18,7 +18,10 @@ pub async fn reconcile(state: &AppState) -> Result<(), ApiError> {
     if !state.config.wallet_enabled() {
         return Ok(());
     }
-    let wallets: Vec<Wallet> = sqlx::query_as("SELECT id,user_id,address,history_block,history_end,history_page FROM wallets WHERE verified_at IS NOT NULL AND network = ? ORDER BY history_checked_at,id LIMIT 5")
+    if state.config.is_solana() {
+        return crate::solana_deposits::reconcile(state).await;
+    }
+    let wallets: Vec<Wallet> = sqlx::query_as("SELECT id,user_id,CAST(address AS CHAR) AS address,history_block,history_end,history_page FROM wallets WHERE verified_at IS NOT NULL AND network = ? ORDER BY history_checked_at,id LIMIT 5")
         .bind(&state.config.network).fetch_all(&state.pool).await?;
     for wallet in wallets {
         if let Err(error) = sync(state, &wallet).await {

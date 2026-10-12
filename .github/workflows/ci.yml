@@ -91,7 +91,9 @@ jobs:
           TEST_DATABASE_URL: mysql://uwifin:uwifin@127.0.0.1:3306/uwifin_test
         # The harness overrides provider URLs with loopback fixtures and synthetic
         # test keys. Never supply live provider credentials to this job.
-        run: node tests/provider-integration.mjs
+        run: |
+          node tests/provider-integration.mjs
+          node tests/multichain-integration.mjs
       - name: Show database diagnostics on failure
         if: failure()
         run: |

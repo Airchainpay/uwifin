@@ -5,8 +5,11 @@ pub mod config;
 pub mod db;
 pub mod deposits;
 pub mod error;
+pub mod networks;
 pub mod payments;
 pub mod security;
+pub mod solana;
+pub mod solana_deposits;
 pub mod state;
 pub mod transaction;
 pub mod wallet;
@@ -20,8 +23,8 @@ use axum::{
 };
 use serde_json::json;
 use state::AppState;
-pub fn app(state: AppState) -> Router {
-    let api = Router::new()
+fn api() -> Router<AppState> {
+    Router::new()
         .route("/capabilities", get(capabilities))
         .route("/admin/:section", get(admin::list))
         .route("/admin/:section/:id", axum::routing::patch(admin::toggle))
@@ -50,22 +53,32 @@ pub fn app(state: AppState) -> Router {
             get(payments::list_payments).post(payments::create_payment),
         )
         .route("/payments/offramp", get(payments::offramp_availability))
-        .route("/payments/stripe/webhook", post(payments::webhook));
-    Router::new()
+        .route("/payments/stripe/webhook", post(payments::webhook))
+}
+pub fn app(state: AppState) -> Router {
+    let mut routes = Router::new().nest("/api/v1", api().with_state(state.clone()));
+    for provider in &state.config.providers {
+        let scoped = state
+            .for_network(&provider.network)
+            .expect("validated network");
+        routes = routes.nest(
+            &format!("/api/v1/networks/{}", provider.network),
+            api().with_state(scoped),
+        );
+    }
+    routes
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
-        .route("/ready", get(ready))
-        .nest("/api/v1", api)
+        .route("/ready", get(ready).with_state(state.clone()))
         .fallback(|| async { error::ApiError::new("NOT_FOUND", "Endpoint not found.") })
         .layer(DefaultBodyLimit::max(65_536))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security::request_controls,
         ))
-        .with_state(state)
 }
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     let database = sqlx::query("SELECT 1").execute(&state.pool).await.is_ok();
-    let providers = state.config.wallet_enabled() && state.config.alchemy_policy_id.is_some();
+    let providers = state.config.transfers_enabled();
     let ready = database && providers;
     (
         if ready {
@@ -80,6 +93,6 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, Json<serde_json::V
 }
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(
-        json!({ "network": state.config.network, "chain_id": state.config.chain_id, "usdc_address": state.config.usdc_address, "wallet_enabled": state.config.wallet_enabled(), "sponsorship_enabled": state.config.alchemy_policy_id.is_some(), "onramp_enabled": state.config.onramp_enabled(), "stripe_mode": if state.config.stripe_live() { "live" } else { "test" }, "offramp_enabled": false }),
+        json!({ "networks": state.config.providers.iter().map(|p| json!({"id": p.network, "label": crate::networks::details(&p.network).expect("validated network").2})).collect::<Vec<_>>(), "network_label": crate::networks::details(&state.config.network).expect("validated network").2, "transfers_enabled": state.config.transfers_enabled(), "family": if state.config.is_solana() { "solana" } else { "evm" }, "network": state.config.network, "chain_id": state.config.chain_id, "usdc_address": state.config.usdc_address, "wallet_enabled": state.config.wallet_enabled(), "sponsorship_enabled": state.config.alchemy_policy_id.is_some(), "onramp_enabled": state.config.onramp_enabled(), "stripe_mode": if state.config.stripe_live() { "live" } else { "test" }, "offramp_enabled": false }),
     )
 }
