@@ -168,6 +168,8 @@ pub async fn create_payment(
             "Card purchases are not available for this wallet yet.",
         ));
     }
+    let destination_network =
+        crate::networks::stripe_network(&state.config.network).ok_or_else(ApiError::unavailable)?;
     let key = headers
         .get("idempotency-key")
         .and_then(|v| v.to_str().ok())
@@ -239,9 +241,12 @@ pub async fn create_payment(
             ),
             ("destination_currencies[]".into(), "usdc".into()),
             ("destination_currency".into(), "usdc".into()),
-            ("destination_networks[]".into(), "base".into()),
-            ("destination_network".into(), "base".into()),
-            ("wallet_addresses[base]".into(), wallet.address.clone()),
+            ("destination_networks[]".into(), destination_network.into()),
+            ("destination_network".into(), destination_network.into()),
+            (
+                format!("wallet_addresses[{destination_network}]"),
+                wallet.address.clone(),
+            ),
             ("lock_wallet_address".into(), "true".into()),
             ("metadata[uwifin_payment_id]".into(), record.id.clone()),
             ("metadata[uwifin_user_id]".into(), user.id.clone()),
@@ -261,6 +266,7 @@ pub async fn create_payment(
         &record.id,
         &user.id,
         &wallet.address,
+        &wallet.network,
         state.config.stripe_live(),
     )?;
     sqlx::query(
@@ -286,20 +292,29 @@ pub fn validate_session(
     id: &str,
     user: &str,
     address: &str,
+    network: &str,
     live: bool,
 ) -> Result<(), ApiError> {
+    let destination_network =
+        crate::networks::stripe_network(network).ok_or_else(ApiError::unavailable)?;
     let details = &session["transaction_details"];
     let destination = details["wallet_address"]
         .as_str()
-        .or_else(|| details["wallet_addresses"]["base"].as_str());
+        .or_else(|| details["wallet_addresses"][destination_network].as_str());
     if session["object"] != "crypto.onramp_session"
         || session["metadata"]["uwifin_payment_id"] != id
         || session["metadata"]["uwifin_user_id"] != user
         || session["livemode"].as_bool() != Some(live)
         || details["lock_wallet_address"] != true
         || details["destination_currency"] != "usdc"
-        || details["destination_network"] != "base"
-        || !destination.is_some_and(|wallet| wallet.eq_ignore_ascii_case(address))
+        || details["destination_network"] != destination_network
+        || !destination.is_some_and(|wallet| {
+            if network == "solana-mainnet" {
+                wallet == address
+            } else {
+                wallet.eq_ignore_ascii_case(address)
+            }
+        })
     {
         return Err(ApiError::new(
             "PAYMENT_MISMATCH",
@@ -381,8 +396,18 @@ async fn apply_session(
     {
         return Err(ApiError::unavailable());
     }
+    // Webhooks use one URL for every chain. Resolve ownership using the saved payment
+    // network, never a network supplied in the event or the webhook route.
+    let payment_state = state
+        .for_network(
+            record
+                .network
+                .as_deref()
+                .ok_or_else(ApiError::unavailable)?,
+        )
+        .map_err(|_| ApiError::unavailable())?;
     let wallet = crate::wallet::owned_wallet(
-        state,
+        &payment_state,
         &record.user_id,
         record
             .wallet_id
@@ -395,6 +420,7 @@ async fn apply_session(
         id,
         &record.user_id,
         &wallet.address,
+        &wallet.network,
         state.config.stripe_live(),
     )?;
     if let Some((event_id, kind)) = event {
@@ -475,17 +501,15 @@ pub async fn list_payments(
     ))
 }
 pub async fn reconcile_pending(state: &AppState) -> Result<(), ApiError> {
-    if state.config.network != "base" {
-        return Ok(());
-    }
     if !state.config.onramp_enabled() {
         return Ok(());
     }
     let references: Vec<String> = sqlx::query_scalar(
         "SELECT provider_reference FROM payments WHERE provider = 'stripe' \
-         AND provider_reference IS NOT NULL AND status IN ('pending','processing') \
+         AND network = ? AND provider_reference IS NOT NULL AND status IN ('pending','processing') \
          ORDER BY updated_at LIMIT 25",
     )
+    .bind(&state.config.network)
     .fetch_all(&state.pool)
     .await?;
     for reference in references {

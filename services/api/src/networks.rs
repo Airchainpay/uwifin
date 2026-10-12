@@ -39,3 +39,13 @@ pub fn alchemy_rpc_url(network: &str, key: &str) -> String {
     };
     format!("https://{host}.g.alchemy.com/v2/{key}")
 }
+
+/// Stripe uses provider-specific names for destination networks. Testnets are unsupported.
+pub fn stripe_network(network: &str) -> Option<&'static str> {
+    match network {
+        "base" => Some("base"),
+        "eth-mainnet" => Some("ethereum"),
+        "solana-mainnet" => Some("solana"),
+        _ => None,
+    }
+}
