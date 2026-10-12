@@ -191,8 +191,23 @@ pub async fn create_payment(
         req.wallet_id, req.currency, amount, state.config.network
     ));
     let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO payments (id, user_id, provider, payment_type, fiat_currency, fiat_amount_minor, requested_amount_minor, crypto_asset, crypto_amount_atomic, status, wallet_id, network, idempotency_key, request_fingerprint, created_at, updated_at) VALUES (?, ?, 'stripe', 'onramp', ?, 0, ?, 'USDC', 0, 'creating', ?, ?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE id = id")
-        .bind(&id).bind(&user.id).bind(&req.currency).bind(amount).bind(&wallet.id).bind(&state.config.network).bind(key).bind(&fingerprint).execute(&state.pool).await?;
+    sqlx::query(
+        "INSERT INTO payments (id, user_id, provider, payment_type, fiat_currency, \
+         fiat_amount_minor, requested_amount_minor, crypto_asset, crypto_amount_atomic, status, \
+         wallet_id, network, idempotency_key, request_fingerprint, created_at, updated_at) \
+         VALUES (?, ?, 'stripe', 'onramp', ?, 0, ?, 'USDC', 0, 'creating', ?, ?, ?, ?, NOW(), NOW()) \
+         ON DUPLICATE KEY UPDATE id = id",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .bind(&req.currency)
+    .bind(amount)
+    .bind(&wallet.id)
+    .bind(&state.config.network)
+    .bind(key)
+    .bind(&fingerprint)
+    .execute(&state.pool)
+    .await?;
     let record = sqlx::query_as::<_, PaymentResponse>(
         "SELECT * FROM payments WHERE user_id = ? AND idempotency_key = ?",
     )
@@ -248,8 +263,16 @@ pub async fn create_payment(
         &wallet.address,
         state.config.stripe_live(),
     )?;
-    sqlx::query("UPDATE payments SET provider_reference = ?, status = CASE WHEN status = 'creating' THEN 'pending' ELSE status END, updated_at = NOW() WHERE id = ? AND (provider_reference IS NULL OR provider_reference = ?)")
-        .bind(reference).bind(&record.id).bind(reference).execute(&state.pool).await?;
+    sqlx::query(
+        "UPDATE payments SET provider_reference = ?, \
+         status = CASE WHEN status = 'creating' THEN 'pending' ELSE status END, updated_at = NOW() \
+         WHERE id = ? AND (provider_reference IS NULL OR provider_reference = ?)",
+    )
+    .bind(reference)
+    .bind(&record.id)
+    .bind(reference)
+    .execute(&state.pool)
+    .await?;
     let secret = session["client_secret"]
         .as_str()
         .filter(|v| v.starts_with("cos_"))
@@ -393,9 +416,9 @@ async fn apply_session(
         Some("initialized" | "requires_payment") => "pending",
         _ => return Err(ApiError::unavailable()),
     };
-    if !["confirmed", "failed"].contains(&record.status.as_str())
-        && !(record.status == "processing" && status == "pending")
-    {
+    let is_terminal = ["confirmed", "failed"].contains(&record.status.as_str());
+    let would_regress = record.status == "processing" && status == "pending";
+    if !(is_terminal || would_regress) {
         let details = &session["transaction_details"];
         let actual_fiat = details["source_amount"]
             .as_str()
@@ -418,8 +441,18 @@ async fn apply_session(
         {
             return Err(ApiError::unavailable());
         }
-        sqlx::query("UPDATE payments SET status = ?, provider_reference = ?, fiat_currency = ?, fiat_amount_minor = ?, crypto_amount_atomic = ?, updated_at = NOW() WHERE id = ?")
-            .bind(status).bind(reference).bind(currency).bind(actual_fiat).bind(actual_crypto).bind(id).execute(&mut *tx).await?;
+        sqlx::query(
+            "UPDATE payments SET status = ?, provider_reference = ?, fiat_currency = ?, \
+             fiat_amount_minor = ?, crypto_amount_atomic = ?, updated_at = NOW() WHERE id = ?",
+        )
+        .bind(status)
+        .bind(reference)
+        .bind(currency)
+        .bind(actual_fiat)
+        .bind(actual_crypto)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         audit(&mut tx, &record.user_id, "payment.status_verified").await?;
     }
     tx.commit().await?;
@@ -444,7 +477,13 @@ pub async fn reconcile_pending(state: &AppState) -> Result<(), ApiError> {
     if !state.config.onramp_enabled() {
         return Ok(());
     }
-    let references: Vec<String> = sqlx::query_scalar("SELECT provider_reference FROM payments WHERE provider = 'stripe' AND provider_reference IS NOT NULL AND status IN ('pending','processing') ORDER BY updated_at LIMIT 25").fetch_all(&state.pool).await?;
+    let references: Vec<String> = sqlx::query_scalar(
+        "SELECT provider_reference FROM payments WHERE provider = 'stripe' \
+         AND provider_reference IS NOT NULL AND status IN ('pending','processing') \
+         ORDER BY updated_at LIMIT 25",
+    )
+    .fetch_all(&state.pool)
+    .await?;
     for reference in references {
         if let Ok(session) = get_session(state, &reference).await {
             let _ = apply_session(state, &session, None).await;
