@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 // Synthetic RPC fixtures: no provider credentials or real blockchain broadcasts.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -56,10 +57,53 @@ const balanceEntry = (amount) => ({
   programId: tokenProgram,
   uiTokenAmount: { amount, decimals: 6 },
 });
+const onrampSessions = new Map();
+const webhookSecret = 'whsec_multichain_synthetic_fixture';
+let stripeCreates = 0;
 const fixture = createServer(async (req, res) => {
   try {
     let body = '';
     for await (const chunk of req) body += chunk;
+    if (req.url.startsWith('/v1/crypto/onramp_sessions')) {
+      let session;
+      if (req.method === 'POST') {
+        const form = new URLSearchParams(body);
+        const network = form.get('destination_network');
+        assert.ok(['ethereum', 'solana'].includes(network));
+        assert.deepEqual(form.getAll('destination_networks[]'), [network]);
+        assert.deepEqual(form.getAll('destination_currencies[]'), ['usdc']);
+        assert.equal(form.get('destination_currency'), 'usdc');
+        assert.equal(form.get('lock_wallet_address'), 'true');
+        const address = network === 'solana' ? owner : evmAddress;
+        assert.equal(form.get(`wallet_addresses[${network}]`), address);
+        const id = `cos_multi_${++stripeCreates}`;
+        session = {
+          id,
+          object: 'crypto.onramp_session',
+          livemode: false,
+          client_secret: `${id}_secret_fixture`,
+          status: 'initialized',
+          metadata: {
+            uwifin_payment_id: form.get('metadata[uwifin_payment_id]'),
+            uwifin_user_id: form.get('metadata[uwifin_user_id]'),
+          },
+          transaction_details: {
+            destination_network: network,
+            destination_currency: 'usdc',
+            lock_wallet_address: true,
+            wallet_addresses: { [network]: address },
+            source_currency: 'usd',
+            source_amount: '10.00',
+            destination_amount: '9.50',
+          },
+        };
+        onrampSessions.set(id, session);
+      } else session = onrampSessions.get(req.url.split('/').pop());
+      assert.ok(session);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(session));
+      return;
+    }
     const { method, params } = JSON.parse(body);
     let result;
     if (req.url === '/eth' || req.url === '/base') {
@@ -281,10 +325,11 @@ const api = spawn('../../services/api/target/debug/uwifin-api', [], {
     ETHEREUM_POLICY_ID: 'eth-policy',
     SOLANA_RPC_URL: `${rpcOrigin}/sol`,
     SOLANA_POLICY_ID: 'solana-policy',
-    STRIPE_ONRAMP_ENABLED: 'false',
-    STRIPE_SECRET_KEY: '',
-    STRIPE_PUBLISHABLE_KEY: '',
-    STRIPE_WEBHOOK_SECRET: '',
+    STRIPE_ONRAMP_ENABLED: 'true',
+    STRIPE_API_URL: rpcOrigin,
+    STRIPE_SECRET_KEY: 'sk_test_multichain_fixture',
+    STRIPE_PUBLISHABLE_KEY: 'pk_test_multichain_fixture',
+    STRIPE_WEBHOOK_SECRET: webhookSecret,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -378,6 +423,7 @@ try {
     assert.equal(cap.chain_id, chain);
     assert.equal(cap.usdc_address, contract);
     assert.equal(cap.transfers_enabled, true);
+    assert.equal(cap.onramp_enabled, true);
   }
   assert.equal((await request('solana-devnet', '/capabilities')).status, 404);
   const challenge = ok(
@@ -428,6 +474,59 @@ try {
     }),
   );
   assert.equal(ethWallet.network, 'eth-mainnet');
+  // One default-network webhook URL must settle purchases on either other network.
+  for (const [wallet, stripeNetwork] of [
+    [ethWallet, 'ethereum'],
+    [solWallet, 'solana'],
+  ]) {
+    const key = randomUUID();
+    const body = { wallet_id: wallet.id, amount: '10.00', currency: 'USD' };
+    const purchase = ok(await request(wallet.network, '/payments', { body, key }));
+    assert.equal(ok(await request(wallet.network, '/payments', { body, key })).id, purchase.id);
+    const provider = [...onrampSessions.values()].find(
+      (s) => s.metadata.uwifin_payment_id === purchase.id,
+    );
+    assert.ok(provider);
+    provider.status = 'fulfillment_complete';
+    const deliver = async () => {
+      const event = JSON.stringify({
+        id: `evt_${randomUUID()}`,
+        type: 'crypto.onramp_session_updated',
+        livemode: false,
+        data: { object: { id: provider.id } },
+      });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = createHmac('sha256', webhookSecret)
+        .update(`${timestamp}.${event}`)
+        .digest('hex');
+      return fetch(`${origin}/api/v1/payments/stripe/webhook`, {
+        method: 'POST',
+        body: event,
+        headers: {
+          'Content-Type': 'application/json',
+          'stripe-signature': `t=${timestamp},v1=${signature}`,
+        },
+      });
+    };
+    if (stripeNetwork === 'solana') {
+      provider.transaction_details.wallet_addresses.solana = owner.toLowerCase();
+      assert.equal((await deliver()).status, 400, 'Solana destinations must preserve case');
+      provider.transaction_details.wallet_addresses.solana = owner;
+    }
+    assert.equal((await deliver()).status, 200);
+    assert.equal((await deliver()).status, 200);
+    const record = ok(await request(wallet.network, '/payments')).payments.find(
+      (p) => p.id === purchase.id,
+    );
+    assert.equal(record.status, 'confirmed');
+    assert.equal(record.crypto_amount_atomic, '9500000');
+    assert.equal(
+      ok(await request('base', '/payments')).payments.some((p) => p.id === purchase.id),
+      false,
+    );
+  }
+  assert.equal(stripeCreates, 2);
+
   const ethIntent = await intent(ethWallet);
   const ethPrepared = ok(
     await request('eth-mainnet', `/transactions/${ethIntent.id}/rpc`, {

@@ -201,7 +201,7 @@ impl Config {
     }
     pub fn onramp_enabled(&self) -> bool {
         self.stripe_onramp_enabled
-            && self.network == "base"
+            && crate::networks::stripe_network(&self.network).is_some()
             && self.stripe_secret_key.is_some()
             && self.stripe_publishable_key.is_some()
             && self.stripe_webhook_secret.is_some()
