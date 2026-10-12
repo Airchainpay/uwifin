@@ -12,11 +12,11 @@ pub mod transaction;
 pub mod wallet;
 pub mod wallet_validation;
 use axum::{
+    Json, Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     middleware,
     routing::{get, post},
-    Json, Router,
 };
 use serde_json::json;
 use state::AppState;

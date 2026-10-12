@@ -3,15 +3,39 @@ use crate::{
     security::{audit, hash},
     state::AppState,
 };
-use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::{rngs::OsRng, RngCore};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::{TryRng, rngs::SysRng};
 use serde::{Deserialize, Serialize};
+
+/// Hash on a blocking worker: Argon2 generates a fresh OS-random salt for each call.
+fn hash_password(password: &str) -> Result<String, ApiError> {
+    Argon2::default()
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
+        .map_err(|_| ApiError::unavailable())
+}
+
+/// Stored PHC parameters are used when verifying hashes created by earlier versions.
+fn verify_password(password: &str, stored_hash: &str) -> Result<bool, ApiError> {
+    let parsed = PasswordHash::new(stored_hash).map_err(|_| ApiError::unavailable())?;
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
+}
+
+fn generate_session_token() -> Result<String, ApiError> {
+    let mut bytes = [0u8; 32];
+    SysRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|_| ApiError::unavailable())?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub struct UserResponse {
@@ -90,9 +114,7 @@ pub async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<UserResp
     Ok(user)
 }
 async fn issue(connection: &mut sqlx::MySqlConnection, user_id: &str) -> Result<String, ApiError> {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let token = generate_session_token()?;
     sqlx::query("INSERT INTO sessions (id, user_id, session_hash, expires_at, created_at) VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW())")
         .bind(uuid::Uuid::new_v4().to_string()).bind(user_id).bind(hash(&token)).execute(connection).await?;
     Ok(token)
@@ -119,10 +141,7 @@ pub async fn register(
         .map_err(|_| ApiError::new("RATE_LIMITED", "Please try again shortly."))?;
     let password_hash = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        Argon2::default()
-            .hash_password(req.password.as_bytes(), &SaltString::generate(&mut OsRng))
-            .map(|hash| hash.to_string())
-            .map_err(|_| ApiError::unavailable())
+        hash_password(&req.password)
     })
     .await
     .map_err(|_| ApiError::unavailable())??;
@@ -191,17 +210,10 @@ pub async fn login(
     let valid = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         if let Some(stored_hash) = stored_hash {
-            PasswordHash::new(&stored_hash)
-                .map(|parsed| {
-                    Argon2::default()
-                        .verify_password(req.password.as_bytes(), &parsed)
-                        .is_ok()
-                })
-                .unwrap_or(false)
+            verify_password(&req.password, &stored_hash).unwrap_or(false)
         } else {
             // Spend the same password-hashing work for unknown accounts.
-            let _ = Argon2::default()
-                .hash_password(req.password.as_bytes(), &SaltString::generate(&mut OsRng));
+            let _ = hash_password(&req.password);
             false
         }
     })
@@ -311,23 +323,13 @@ pub async fn change_password(
         .map_err(|_| ApiError::new("RATE_LIMITED", "Try again shortly."))?;
     let new = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let parsed = PasswordHash::new(&old).map_err(|_| ApiError::unavailable())?;
-        if Argon2::default()
-            .verify_password(req.current_password.as_bytes(), &parsed)
-            .is_err()
-        {
+        if !verify_password(&req.current_password, &old)? {
             return Err(ApiError::new(
                 "FORBIDDEN",
                 "The current password is incorrect.",
             ));
         }
-        Argon2::default()
-            .hash_password(
-                req.new_password.as_bytes(),
-                &SaltString::generate(&mut OsRng),
-            )
-            .map(|v| v.to_string())
-            .map_err(|_| ApiError::unavailable())
+        hash_password(&req.new_password)
     })
     .await
     .map_err(|_| ApiError::unavailable())??;
@@ -361,4 +363,63 @@ pub async fn revoke_other_sessions(
     audit(&mut tx, &user.id, "account.other_sessions_revoked").await?;
     tx.commit().await?;
     Ok(Json(serde_json::json!({"status":"revoked"})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Generated with Argon2 0.5.3's defaults and the synthetic salt "uwifin-test-salt!".
+    const LEGACY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dXdpZmluLXRlc3Qtc2FsdCE$Gr/O/SUJR0TPjfo3bgY7HpGBYdC4qHM9g+kQNiDbQhg";
+
+    #[test]
+    fn verifies_passwords_created_before_the_upgrade() {
+        assert!(verify_password("legacy-password-123", LEGACY_HASH).unwrap());
+        assert!(!verify_password("incorrect-password", LEGACY_HASH).unwrap());
+        assert!(verify_password("legacy-password-123", "malformed-hash").is_err());
+    }
+
+    #[test]
+    fn password_hashes_keep_the_parameters_and_use_fresh_salts() {
+        let password = "synthetic-password-123";
+        let first = hash_password(password).unwrap();
+        let second = hash_password(password).unwrap();
+        for encoded in [&first, &second] {
+            assert!(encoded.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"));
+            assert!(verify_password(password, encoded).unwrap());
+            assert!(!verify_password("incorrect-password", encoded).unwrap());
+        }
+        let first = PasswordHash::new(&first).unwrap();
+        let second = PasswordHash::new(&second).unwrap();
+        assert!(first.salt.is_some());
+        assert!(second.salt.is_some());
+        assert_ne!(first.salt, second.salt);
+    }
+
+    #[test]
+    fn session_tokens_remain_random_and_url_safe() {
+        let first = generate_session_token().unwrap();
+        let second = generate_session_token().unwrap();
+        assert_ne!(first, second);
+        for token in [first, second] {
+            assert_eq!(token.len(), 43);
+            assert!(
+                token
+                    .bytes()
+                    .all(|byte| { byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' })
+            );
+            assert_eq!(URL_SAFE_NO_PAD.decode(&token).unwrap().len(), 32);
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            assert_eq!(session_token(&headers).unwrap(), token);
+        }
+    }
+
+    #[test]
+    fn session_hashes_keep_the_sha256_format() {
+        assert_eq!(
+            hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

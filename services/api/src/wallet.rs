@@ -8,9 +8,9 @@ use crate::{
 };
 use alloy_primitives::PrimitiveSignature;
 use axum::{
+    Json,
     extract::{Path, State},
     http::HeaderMap,
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -81,7 +81,15 @@ pub async fn challenge(
     let address = validate_wallet_address(&req.signer_address)?;
     let id = uuid::Uuid::new_v4().to_string();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(5);
-    let message = format!("UwiFin wallet connection\n\nConnect a smart wallet to your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}", state.config.app_base_url, user.id, address, state.config.network, id, expires.to_rfc3339());
+    let message = format!(
+        "UwiFin wallet connection\n\nConnect a smart wallet to your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}",
+        state.config.app_base_url,
+        user.id,
+        address,
+        state.config.network,
+        id,
+        expires.to_rfc3339()
+    );
     sqlx::query("INSERT INTO wallet_challenges (id, user_id, session_hash, signer_address, message, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&id).bind(user.id).bind(hash(session_token(&headers)?)).bind(address).bind(&message).bind(expires).execute(&state.pool).await?;
     Ok(Json(
