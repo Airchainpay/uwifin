@@ -13,6 +13,10 @@ export type Wallet = {
   signer_address: string | null;
 };
 export type Capabilities = {
+  networks: { id: string; label: string }[];
+  network_label: string;
+  family: 'evm' | 'solana';
+  transfers_enabled: boolean;
   network: string;
   chain_id: number;
   usdc_address: string;
@@ -24,8 +28,25 @@ export type Capabilities = {
 };
 export type Balance = { asset: string; balance: string; network: string };
 
+// Freeze the network for this page lifetime, including in-flight signing operations.
+let networkPrefix: string | undefined;
+function apiPrefix(): string {
+  if (networkPrefix === undefined) {
+    const selected =
+      typeof window === 'undefined' ? null : sessionStorage.getItem('uwifin-network');
+    networkPrefix =
+      selected && ['base', 'eth-mainnet', 'solana-mainnet', 'base-sepolia'].includes(selected)
+        ? `/networks/${selected}`
+        : '';
+  }
+  return `/api/v1${networkPrefix}`;
+}
+export function selectNetwork(network: string) {
+  sessionStorage.setItem('uwifin-network', network);
+  window.location.reload();
+}
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
+  const response = await fetch(`${apiPrefix()}${path}`, {
     ...options,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...options.headers },

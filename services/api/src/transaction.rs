@@ -138,7 +138,11 @@ pub async fn create_transaction(
             "Only USDC is supported.",
         ));
     }
-    req.recipient = validate_wallet_address(&req.recipient)?;
+    req.recipient = if state.config.is_solana() {
+        crate::solana::validate_address(&req.recipient)?
+    } else {
+        validate_wallet_address(&req.recipient)?
+    };
     let amount = parse_amount(&req.amount)?;
     if amount > state.config.transfer_limit_atomic {
         return Err(ApiError::new(
@@ -171,7 +175,7 @@ pub async fn create_transaction(
             "The wallet and transaction networks must match.",
         ));
     }
-    if wallet.address.eq_ignore_ascii_case(&req.recipient) {
+    if wallet.address == req.recipient {
         return Err(ApiError::new(
             "INVALID_REQUEST",
             "Choose a recipient other than your own wallet.",
@@ -224,10 +228,11 @@ pub async fn get_transaction(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authorize(&state, &headers).await?;
     let record = sqlx::query_as::<_, TransactionRecord>(
-        "SELECT * FROM transactions WHERE id = ? AND user_id = ?",
+        "SELECT * FROM transactions WHERE id = ? AND user_id = ? AND network = ?",
     )
     .bind(id)
     .bind(user.id)
+    .bind(&state.config.network)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| ApiError::new("NOT_FOUND", "Transaction not found."))?;
@@ -284,8 +289,8 @@ pub async fn list_transactions(
     if search.len() > 128 {
         return Err(ApiError::new("INVALID_REQUEST", "Search is too long."));
     }
-    let records = sqlx::query_as::<_, TransactionRecord>("SELECT * FROM transactions WHERE user_id = ? AND (? IS NULL OR status = ?) AND (? IS NULL OR kind = ?) AND (? = '' OR LOCATE(?, CONCAT(id,' ',sender,' ',recipient,' ',COALESCE(tx_hash,''),' USDC Wallet transfer')) > 0) ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?")
-        .bind(user.id).bind(&status).bind(&status).bind(&kind).bind(&kind).bind(&search).bind(&search).bind(limit).bind((page-1)*limit).fetch_all(&state.pool).await?;
+    let records = sqlx::query_as::<_, TransactionRecord>("SELECT * FROM transactions WHERE user_id = ? AND network = ? AND (? IS NULL OR status = ?) AND (? IS NULL OR kind = ?) AND (? = '' OR LOCATE(?, CONCAT(id,' ',sender,' ',recipient,' ',COALESCE(tx_hash,''),' USDC Wallet transfer')) > 0) ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?")
+        .bind(user.id).bind(&state.config.network).bind(&status).bind(&status).bind(&kind).bind(&kind).bind(&search).bind(&search).bind(limit).bind((page-1)*limit).fetch_all(&state.pool).await?;
     Ok(Json(
         serde_json::json!({ "transactions": records.iter().map(record_json).collect::<Vec<_>>(), "page": page, "limit": limit }),
     ))
@@ -326,9 +331,10 @@ async fn load_record(
     id: &str,
     user: &str,
 ) -> Result<TransactionRecord, ApiError> {
-    sqlx::query_as("SELECT * FROM transactions WHERE id = ? AND user_id = ?")
+    sqlx::query_as("SELECT * FROM transactions WHERE id = ? AND user_id = ? AND network = ?")
         .bind(id)
         .bind(user)
+        .bind(&state.config.network)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| ApiError::new("NOT_FOUND", "Transaction not found."))
@@ -336,18 +342,13 @@ async fn load_record(
 async fn prepare(state: &AppState, user: &str, id: &str) -> Result<serde_json::Value, ApiError> {
     crate::admin::require_enabled(state).await?;
     state.limits.check(format!("prepare:{user}"), 10)?;
-    let policy = state.config.alchemy_policy_id.as_ref().ok_or_else(|| {
-        ApiError::new(
-            "PROVIDER_NOT_CONFIGURED",
-            "Sponsored transfers are temporarily unavailable.",
-        )
-    })?;
     let mut tx = state.pool.begin().await?;
     let record = sqlx::query_as::<_, TransactionRecord>(
-        "SELECT * FROM transactions WHERE id = ? AND user_id = ? FOR UPDATE",
+        "SELECT * FROM transactions WHERE id = ? AND user_id = ? AND network = ? FOR UPDATE",
     )
     .bind(id)
     .bind(user)
+    .bind(&state.config.network)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::new("NOT_FOUND", "Transaction not found."))?;
@@ -401,22 +402,39 @@ async fn prepare(state: &AppState, user: &str, id: &str) -> Result<serde_json::V
                 error.into()
             }
         })?;
-    let calldata = format!(
-        "0xa9059cbb{:0>64}{:064x}",
-        &record.recipient[2..],
-        record.amount_atomic
-    );
-    let prepared = crate::alchemy::wallet_rpc(
-        state,
-        "wallet_prepareCalls",
-        serde_json::json!([{
-            "from": record.sender, "chainId": format!("0x{:x}", state.config.chain_id),
-            "calls": [{ "to": state.config.usdc_address, "data": calldata, "value": "0x0" }],
-            "capabilities": { "paymasterService": { "policyId": policy } }
-        }]),
-    )
-    .await?;
-    validate_prepared(&prepared, &record.sender, state.config.chain_id)?;
+    let prepared = if state.config.is_solana() {
+        crate::solana::prepare(
+            state,
+            &record.sender,
+            &record.recipient,
+            record.amount_atomic,
+        )
+        .await?
+    } else {
+        let policy = state.config.alchemy_policy_id.as_ref().ok_or_else(|| {
+            ApiError::new(
+                "PROVIDER_NOT_CONFIGURED",
+                "Sponsored transfers are temporarily unavailable.",
+            )
+        })?;
+        let calldata = format!(
+            "0xa9059cbb{:0>64}{:064x}",
+            &record.recipient[2..],
+            record.amount_atomic
+        );
+        let prepared = crate::alchemy::wallet_rpc(
+            state,
+            "wallet_prepareCalls",
+            serde_json::json!([{
+                "from": record.sender, "chainId": format!("0x{:x}", state.config.chain_id),
+                "calls": [{ "to": state.config.usdc_address, "data": calldata, "value": "0x0" }],
+                "capabilities": { "paymasterService": { "policyId": policy } }
+            }]),
+        )
+        .await?;
+        validate_prepared(&prepared, &record.sender, state.config.chain_id)?;
+        prepared
+    };
     sqlx::query("UPDATE transactions SET status = 'READY', prepared_call = ?, prepared_expires_at = DATE_ADD(NOW(), INTERVAL 3 MINUTE), updated_at = NOW() WHERE id = ?")
         .bind(sqlx::types::Json(&prepared)).bind(id).execute(&mut *tx).await?;
     audit(&mut tx, user, "transaction.prepared").await?;
@@ -516,10 +534,11 @@ async fn submit(
     state.limits.check(format!("submit:{user}"), 10)?;
     let mut tx = state.pool.begin().await?;
     let record = sqlx::query_as::<_, TransactionRecord>(
-        "SELECT * FROM transactions WHERE id = ? AND user_id = ? FOR UPDATE",
+        "SELECT * FROM transactions WHERE id = ? AND user_id = ? AND network = ? FOR UPDATE",
     )
     .bind(id)
     .bind(user)
+    .bind(&state.config.network)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::new("NOT_FOUND", "Transaction not found."))?;
@@ -541,7 +560,11 @@ async fn submit(
         ));
     }
     let prepared = record.prepared_call.ok_or_else(ApiError::unavailable)?.0;
-    let signed = attach_signature(&prepared, &params[0])?;
+    let signed = if state.config.is_solana() {
+        crate::solana::attach_signature(&prepared, &params[0], &record.sender)?
+    } else {
+        attach_signature(&prepared, &params[0])?
+    };
     sqlx::query("UPDATE transactions SET signed_call = ?, status = 'SUBMITTED', submitted_at = NOW(), updated_at = NOW() WHERE id = ?")
         .bind(sqlx::types::Json(&signed)).bind(id).execute(&mut *tx).await?;
     audit(&mut tx, user, "transaction.submission_requested").await?;
@@ -559,6 +582,16 @@ async fn send_stored(
         return Ok(serde_json::json!({ "id": call_id }));
     }
     let signed = record.signed_call.ok_or_else(ApiError::unavailable)?.0;
+    if state.config.is_solana() {
+        let signature = signed["signature"]
+            .as_str()
+            .ok_or_else(ApiError::unavailable)?;
+        // Store identity before sending; reconciliation can recover an ambiguous RPC timeout.
+        sqlx::query("UPDATE transactions SET call_id = ?, tx_hash = ?, status = 'PENDING', updated_at = NOW() WHERE id = ? AND user_id = ? AND status = 'SUBMITTED'")
+            .bind(signature).bind(signature).bind(id).bind(user).execute(&state.pool).await?;
+        crate::solana::broadcast(state, &signed).await?;
+        return Ok(serde_json::json!({"id":signature}));
+    }
     let response = crate::alchemy::wallet_rpc(
         state,
         "wallet_sendPreparedCalls",
@@ -585,6 +618,9 @@ pub async fn reconcile_one(state: &AppState, id: &str, user: &str) -> Result<(),
     let Some(call_id) = record.call_id.as_ref() else {
         return Ok(());
     };
+    if state.config.is_solana() {
+        return reconcile_solana(state, &record).await;
+    }
     let status =
         crate::alchemy::wallet_rpc(state, "wallet_getCallsStatus", serde_json::json!([call_id]))
             .await?;
@@ -690,7 +726,7 @@ pub async fn reconcile_one(state: &AppState, id: &str, user: &str) -> Result<(),
 }
 pub async fn reconcile_pending(state: &AppState) -> Result<(), ApiError> {
     sqlx::query("UPDATE transactions SET status = 'CREATED', prepared_call = NULL, updated_at = NOW() WHERE status = 'READY' AND prepared_expires_at < NOW()").execute(&state.pool).await?;
-    let pending: Vec<(String, String)> = sqlx::query_as("SELECT id, user_id FROM transactions WHERE status IN ('SUBMITTED','PENDING') ORDER BY updated_at ASC LIMIT 50").fetch_all(&state.pool).await?;
+    let pending: Vec<(String, String)> = sqlx::query_as("SELECT id, user_id FROM transactions WHERE network = ? AND status IN ('SUBMITTED','PENDING') ORDER BY updated_at ASC LIMIT 50").bind(&state.config.network).fetch_all(&state.pool).await?;
     for (id, user) in pending {
         if let Err(error) = reconcile_one(state, &id, &user).await {
             tracing::warn!(
@@ -701,5 +737,91 @@ pub async fn reconcile_pending(state: &AppState) -> Result<(), ApiError> {
         }
         sqlx::query("UPDATE transactions SET updated_at = NOW() WHERE id = ? AND status IN ('SUBMITTED','PENDING')").bind(&id).execute(&state.pool).await?;
     }
+    Ok(())
+}
+
+async fn reconcile_solana(state: &AppState, record: &TransactionRecord) -> Result<(), ApiError> {
+    use crate::alchemy::chain_rpc;
+    use serde_json::json;
+    crate::solana::verify_chain(state).await?;
+    let signature = record.call_id.as_ref().ok_or_else(ApiError::unavailable)?;
+    let prepared = &record
+        .prepared_call
+        .as_ref()
+        .ok_or_else(ApiError::unavailable)?
+        .0;
+    let receipt = chain_rpc(state, "getTransaction", json!([signature, {"encoding":"base64", "commitment":"finalized", "maxSupportedTransactionVersion":0}])).await?;
+    let outcome = if receipt.is_null() {
+        let height = chain_rpc(state, "getBlockHeight", json!([{"commitment":"finalized"}]))
+            .await?
+            .as_u64()
+            .ok_or_else(ApiError::unavailable)?;
+        let last_valid = prepared["last_valid_height"]
+            .as_u64()
+            .ok_or_else(ApiError::unavailable)?;
+        if height <= last_valid {
+            crate::solana::broadcast(
+                state,
+                &record
+                    .signed_call
+                    .as_ref()
+                    .ok_or_else(ApiError::unavailable)?
+                    .0,
+            )
+            .await?;
+            return Ok(());
+        }
+        // A provider may refresh the blockhash while sponsoring. Never expire based only on metadata.
+        let valid = chain_rpc(
+            state,
+            "isBlockhashValid",
+            json!([prepared["blockhash"], {"commitment":"finalized"}]),
+        )
+        .await?;
+        if valid["value"].as_bool().ok_or_else(ApiError::unavailable)? {
+            return Ok(());
+        }
+        let statuses = chain_rpc(
+            state,
+            "getSignatureStatuses",
+            json!([[signature], {"searchTransactionHistory":true}]),
+        )
+        .await?;
+        let status = statuses["value"]
+            .as_array()
+            .filter(|v| v.len() == 1)
+            .ok_or_else(ApiError::unavailable)?;
+        if !status[0].is_null() {
+            return Ok(());
+        }
+        "FAILED"
+    } else {
+        if !crate::solana::receipt_matches(&receipt, signature, prepared)
+            || receipt["meta"].get("err").is_none()
+        {
+            return Err(ApiError::unavailable());
+        }
+        if receipt["meta"]["err"].is_null() {
+            "CONFIRMED"
+        } else {
+            "FAILED"
+        }
+    };
+    let mut tx = state.pool.begin().await?;
+    let updated = sqlx::query("UPDATE transactions SET status = ?, confirmed_at = CASE WHEN ? = 'CONFIRMED' THEN NOW() ELSE NULL END, signed_call = NULL, error_code = CASE WHEN ? = 'FAILED' THEN 'TRANSACTION_FAILED_OR_EXPIRED' ELSE NULL END, updated_at = NOW() WHERE id = ? AND status = 'PENDING'")
+        .bind(outcome).bind(outcome).bind(outcome).bind(&record.id).execute(&mut *tx).await?;
+    if updated.rows_affected() == 1 {
+        audit(
+            &mut tx,
+            &record.user_id,
+            if outcome == "CONFIRMED" {
+                "transaction.confirmed"
+            } else {
+                "transaction.failed"
+            },
+        )
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }

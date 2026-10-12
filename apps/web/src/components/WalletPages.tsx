@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import { ArrowDownLeft, ArrowUpRight, Download, Link2, ShieldCheck } from 'lucide-react';
 import { useFinance } from '@/contexts/FinanceContext';
 import { decimalAmount, shortAddress } from '@/lib/money';
+import { selectNetwork } from '@/lib/api';
 import { CopyButton, UsdcIcon } from './UI';
 export function WalletPage() {
   const {
@@ -29,7 +30,7 @@ export function WalletPage() {
         <div>
           <span className="eyebrow">A HOME FOR YOUR MONEY</span>
           <h1>My wallet.</h1>
-          <p>A smart wallet controlled by your own wallet account.</p>
+          <p>Hold and transfer USDC on your selected network.</p>
         </div>
         <button
           className="button primary"
@@ -50,7 +51,23 @@ export function WalletPage() {
           {busy ? 'Approve in your wallet…' : 'Connect wallet'}
         </button>
       </section>
-      <EmailWallet />
+      <label>
+        Network
+        <select
+          className="input"
+          value={capabilities?.network || ''}
+          disabled={!capabilities || busy}
+          onChange={(event) => selectNetwork(event.target.value)}
+        >
+          {!capabilities && <option value="">Loading networks…</option>}
+          {capabilities?.networks.map((network) => (
+            <option key={network.id} value={network.id}>
+              {network.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {capabilities?.family === 'evm' && <EmailWallet />}
       {(error || connectionError) && (
         <p className="error-banner" role="alert">
           {connectionError || error}
@@ -64,7 +81,7 @@ export function WalletPage() {
       <div className="wallet-layout">
         <section className="wallet-main-card">
           <div className="card-heading">
-            <h2>UwiFin smart wallet</h2>
+            <h2>USDC wallet</h2>
             <span className="network-pill">{networkLabel}</span>
           </div>
           {wallets.length > 1 && (
@@ -114,16 +131,18 @@ export function WalletPage() {
           <ShieldCheck size={30} />
           <h2>Your wallet. Your control.</h2>
           <p>
-            Connect an Ethereum wallet, then sign a message to verify ownership. UwiFin creates an
-            Alchemy smart wallet controlled by that signing account.
+            {capabilities?.family === 'solana'
+              ? 'Connect a Solana wallet such as Phantom and sign a message to verify ownership. Your connected account is your receive address.'
+              : 'Connect an Ethereum wallet and verify ownership to create an Alchemy smart wallet on the selected network.'}
           </p>
           <p>
             Keep access to your signing wallet. UwiFin never asks for your private key or seed
             phrase and cannot recover them.
           </p>
           <p>
-            Your smart wallet address is different from your signing account. Use the receive
-            address shown here.
+            {capabilities?.family === 'solana'
+              ? 'Alchemy sponsors eligible network fees and token account rent. You only need USDC; sending requires approved sponsorship.'
+              : 'Your smart wallet address differs from your signing account. Use the receive address shown here.'}
           </p>
         </section>
       </div>
@@ -200,8 +219,8 @@ export function ReceivePage() {
               )}
             </div>
             <p className="info-note">
-              Only send USDC on {networkLabel} to this smart wallet address. Testnet tokens have no
-              monetary value.
+              Only send native USDC on {networkLabel} to this address. Match the network exactly;
+              switching networks does not bridge funds.
             </p>
           </>
         ) : (

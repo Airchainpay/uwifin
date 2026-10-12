@@ -1,3 +1,5 @@
+import { PublicKey } from '@solana/web3.js';
+
 /** USDC amounts are represented as strings of atomic units (six decimals). */
 export function parseAmount(value: string): bigint {
   if (!/^\d{1,18}(\.\d{1,6})?$/.test(value))
@@ -20,7 +22,19 @@ export function money(atomic: string | bigint, symbol = '$'): string {
   return `${symbol}${whole}.${((amount % 1_000_000n) / 10_000n).toString().padStart(2, '0')}`;
 }
 
-export function validateAddress(address: string): boolean {
+export function validateAddress(address: string, network?: string): boolean {
+  if (network === 'solana-mainnet') {
+    try {
+      const key = new PublicKey(address);
+      return (
+        key.toBase58() === address &&
+        !key.equals(PublicKey.default) &&
+        PublicKey.isOnCurve(key.toBytes())
+      );
+    } catch {
+      return false;
+    }
+  }
   return /^0x[0-9a-fA-F]{40}$/.test(address) && !/^0x0{40}$/.test(address);
 }
 

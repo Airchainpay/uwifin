@@ -464,9 +464,10 @@ pub async fn list_payments(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authorize(&state, &headers).await?;
     let records = sqlx::query_as::<_, PaymentResponse>(
-        "SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+        "SELECT * FROM payments WHERE user_id = ? AND network = ? ORDER BY created_at DESC LIMIT 100",
     )
     .bind(user.id)
+    .bind(&state.config.network)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
@@ -474,6 +475,9 @@ pub async fn list_payments(
     ))
 }
 pub async fn reconcile_pending(state: &AppState) -> Result<(), ApiError> {
+    if state.config.network != "base" {
+        return Ok(());
+    }
     if !state.config.onramp_enabled() {
         return Ok(());
     }

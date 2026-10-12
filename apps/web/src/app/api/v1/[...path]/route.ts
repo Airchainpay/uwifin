@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const COOKIE = 'uwifin_session';
 const allowedPaths =
-  /^(admin\/(users|transactions|payments|events|errors|assets|networks)(?:\/[a-zA-Z0-9-]+)?|capabilities|auth\/(register|login|logout|me|password|revoke-sessions)|users\/me|wallets(?:\/[a-zA-Z0-9-]+(?:\/balances)?)?|transactions(?:\/[a-zA-Z0-9-]+(?:\/rpc)?)?|payments(?:\/[a-zA-Z0-9-]+)?)$/;
+  /^(?:networks\/(?:base|eth-mainnet|solana-mainnet|base-sepolia)\/)?(admin\/(users|transactions|payments|events|errors|assets|networks)(?:\/[a-zA-Z0-9-]+)?|capabilities|auth\/(register|login|logout|me|password|revoke-sessions)|users\/me|wallets(?:\/[a-zA-Z0-9-]+(?:\/balances)?)?|transactions(?:\/[a-zA-Z0-9-]+(?:\/rpc)?)?|payments(?:\/[a-zA-Z0-9-]+)?)$/;
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const requestId = crypto.randomUUID();
@@ -13,6 +13,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     );
   const { path } = await context.params;
   const endpoint = path.join('/');
+  const logicalEndpoint = endpoint.replace(/^networks\/[^/]+\//, '');
   if (!allowedPaths.test(endpoint)) return fail('NOT_FOUND', 'Endpoint not found.', 404);
   if (request.method !== 'GET') {
     const origin = request.headers.get('origin');
@@ -26,7 +27,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     return fail('SERVICE_UNAVAILABLE', 'Account services are temporarily unavailable.', 503);
   const token = request.cookies.get(COOKIE)?.value;
   const publicPath =
-    endpoint === 'auth/login' || endpoint === 'auth/register' || endpoint === 'capabilities';
+    logicalEndpoint === 'auth/login' ||
+    logicalEndpoint === 'auth/register' ||
+    logicalEndpoint === 'capabilities';
   if (!publicPath && !token) return fail('UNAUTHORIZED', 'Please sign in to continue.', 401);
   try {
     const body = request.method === 'GET' ? undefined : await request.text();
@@ -77,7 +80,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         maxAge: 60 * 60 * 24,
       });
     }
-    if ((endpoint === 'auth/logout' && response.ok) || response.status === 401)
+    if ((logicalEndpoint === 'auth/logout' && response.ok) || response.status === 401)
       result.cookies.delete(COOKIE);
     return result;
   } catch {

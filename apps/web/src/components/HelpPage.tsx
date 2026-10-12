@@ -6,19 +6,19 @@ const faqs = [
     id: 'wallet',
     question: 'Is this real money?',
     answer:
-      'Balances are read from your connected smart wallet. Base mainnet uses real assets; Base Sepolia is a test network with tokens that have no monetary value. Check the network shown in your wallet.',
+      'Balances show native USDC on the selected network. Base, Ethereum and Solana mainnet use real assets. On Solana, UwiFin uses the associated USDC token account. Network balances are separate; changing networks does not bridge funds.',
   },
   {
     id: 'network-fees',
     question: 'How do sponsored network fees work?',
     answer:
-      'Eligible transfers can have their network fee paid through an Alchemy Gas Manager policy. Eligibility depends on the network, token, method, and spending limits. Transfers proceed only after sponsorship is approved.',
+      'All transfers require approved Alchemy sponsorship. On Solana, it covers network fees and recipient token account rent, so users do not need SOL. Sponsorship costs are billed to the app. USDC is the only supported transfer asset.',
   },
   {
     id: 'network',
     question: 'Which assets and networks can I use?',
     answer:
-      'This MVP focuses on USDC on a single Base network. Live development uses Base Sepolia testnet. The sender and receiver must use the same network. Never send another asset or use another chain without confirming support.',
+      'Use native USDC on Base mainnet, Ethereum mainnet or Solana mainnet. Select the network on the wallet page. Sender and receiver must use the same network. Bridged USDC and other tokens are not supported.',
   },
   {
     id: 'payouts',

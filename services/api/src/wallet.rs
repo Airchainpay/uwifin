@@ -14,6 +14,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+// Binary address collations preserve Solana case. SELECT projections cast to the connection
+// charset because SQLx otherwise treats these VARCHAR columns as binary data.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct WalletResponse {
     pub id: String,
@@ -28,7 +30,7 @@ pub async fn list_wallets(
     headers: HeaderMap,
 ) -> Result<Json<Vec<WalletResponse>>, ApiError> {
     let user = authorize(&state, &headers).await?;
-    Ok(Json(sqlx::query_as("SELECT id, address, network, wallet_type, signer_address, created_at FROM wallets WHERE user_id = ? AND verified_at IS NOT NULL AND network = ? ORDER BY created_at DESC")
+    Ok(Json(sqlx::query_as("SELECT id, CAST(address AS CHAR) AS address, network, wallet_type, CAST(signer_address AS CHAR) AS signer_address, created_at FROM wallets WHERE user_id = ? AND verified_at IS NOT NULL AND network = ? ORDER BY created_at DESC")
         .bind(user.id).bind(&state.config.network).fetch_all(&state.pool).await?))
 }
 pub async fn owned_wallet(
@@ -36,7 +38,7 @@ pub async fn owned_wallet(
     user_id: &str,
     wallet_id: &str,
 ) -> Result<WalletResponse, ApiError> {
-    sqlx::query_as("SELECT id, address, network, wallet_type, signer_address, created_at FROM wallets WHERE id = ? AND user_id = ? AND verified_at IS NOT NULL AND network = ?")
+    sqlx::query_as("SELECT id, CAST(address AS CHAR) AS address, network, wallet_type, CAST(signer_address AS CHAR) AS signer_address, created_at FROM wallets WHERE id = ? AND user_id = ? AND verified_at IS NOT NULL AND network = ?")
         .bind(wallet_id).bind(user_id).bind(&state.config.network).fetch_optional(&state.pool).await?
         .ok_or_else(|| ApiError::new("NOT_FOUND", "Wallet not found."))
 }
@@ -78,11 +80,15 @@ pub async fn challenge(
             "Wallet connection is temporarily unavailable. Please try again later.",
         ));
     }
-    let address = validate_wallet_address(&req.signer_address)?;
+    let address = if state.config.is_solana() {
+        crate::solana::validate_address(&req.signer_address)?
+    } else {
+        validate_wallet_address(&req.signer_address)?
+    };
     let id = uuid::Uuid::new_v4().to_string();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(5);
     let message = format!(
-        "UwiFin wallet connection\n\nConnect a smart wallet to your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}",
+        "UwiFin wallet connection\n\nConnect a wallet to your UwiFin account. This signature does not transfer funds.\n\nOrigin: {}\nAccount: {}\nSigner: {}\nNetwork: {}\nChallenge: {}\nExpires: {}",
         state.config.app_base_url,
         user.id,
         address,
@@ -90,8 +96,8 @@ pub async fn challenge(
         id,
         expires.to_rfc3339()
     );
-    sqlx::query("INSERT INTO wallet_challenges (id, user_id, session_hash, signer_address, message, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&id).bind(user.id).bind(hash(session_token(&headers)?)).bind(address).bind(&message).bind(expires).execute(&state.pool).await?;
+    sqlx::query("INSERT INTO wallet_challenges (id, user_id, session_hash, signer_address, message, expires_at, network) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(&id).bind(user.id).bind(hash(session_token(&headers)?)).bind(address).bind(&message).bind(expires).bind(&state.config.network).execute(&state.pool).await?;
     Ok(Json(
         serde_json::json!({ "id": id, "message": message, "expires_at": expires }),
     ))
@@ -121,14 +127,23 @@ pub async fn create_wallet(
     let user = authorize(&state, &headers).await?;
     state.limits.check(format!("wallet-link:{}", user.id), 5)?;
     let mut tx = state.pool.begin().await?;
-    let challenge = sqlx::query_as::<_, Challenge>("SELECT signer_address, message FROM wallet_challenges WHERE id = ? AND user_id = ? AND session_hash = ? AND consumed_at IS NULL AND expires_at > NOW() FOR UPDATE")
-        .bind(&req.challenge_id).bind(&user.id).bind(hash(session_token(&headers)?)).fetch_optional(&mut *tx).await?
+    let challenge = sqlx::query_as::<_, Challenge>("SELECT CAST(signer_address AS CHAR) AS signer_address, message FROM wallet_challenges WHERE id = ? AND user_id = ? AND session_hash = ? AND consumed_at IS NULL AND expires_at > NOW() AND network = ? FOR UPDATE")
+        .bind(&req.challenge_id).bind(&user.id).bind(hash(session_token(&headers)?)).bind(&state.config.network).fetch_optional(&mut *tx).await?
         .ok_or_else(|| ApiError::new("INVALID_REQUEST", "This wallet challenge has expired or was already used. Reconnect your wallet."))?;
-    if !verify_ownership(
-        &challenge.message,
-        &req.signature,
-        &challenge.signer_address,
-    ) {
+    let verified = if state.config.is_solana() {
+        crate::solana::verify_ownership(
+            &challenge.message,
+            &req.signature,
+            &challenge.signer_address,
+        )
+    } else {
+        verify_ownership(
+            &challenge.message,
+            &req.signature,
+            &challenge.signer_address,
+        )
+    };
+    if !verified {
         return Err(ApiError::new(
             "FORBIDDEN",
             "The wallet signature could not be verified.",
@@ -149,18 +164,24 @@ pub async fn create_wallet(
         tx.commit().await?;
         return Ok(Json(owned_wallet(&state, &user.id, &id).await?));
     }
-    let response = crate::alchemy::wallet_rpc(&state, "wallet_requestAccount", serde_json::json!([{
+    let (address, provider_id, wallet_type) = if state.config.is_solana() {
+        crate::solana::verify_chain(&state).await?;
+        (challenge.signer_address.clone(), None, "external")
+    } else {
+        let response = crate::alchemy::wallet_rpc(&state, "wallet_requestAccount", serde_json::json!([{
         "signerAddress": challenge.signer_address, "creationHint": { "accountType": "sma-b", "createAdditional": true }
     }])).await?;
-    let address = validate_wallet_address(
-        response["accountAddress"]
+        let address = validate_wallet_address(
+            response["accountAddress"]
+                .as_str()
+                .ok_or_else(ApiError::unavailable)?,
+        )?;
+        let provider_id = response["id"]
             .as_str()
-            .ok_or_else(ApiError::unavailable)?,
-    )?;
-    let provider_id = response["id"]
-        .as_str()
-        .filter(|id| id.len() <= 64)
-        .ok_or_else(ApiError::unavailable)?;
+            .filter(|id| id.len() <= 64)
+            .ok_or_else(ApiError::unavailable)?;
+        (address, Some(provider_id.to_owned()), "smart_account")
+    };
     let id = uuid::Uuid::new_v4().to_string();
     let existing: Option<(String, String)> = sqlx::query_as(
         "SELECT id, user_id FROM wallets WHERE address = ? AND network = ? FOR UPDATE",
@@ -178,8 +199,8 @@ pub async fn create_wallet(
         }
         existing_id
     } else {
-        sqlx::query("INSERT INTO wallets (id, user_id, address, network, wallet_type, signer_address, provider_account_id, verified_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'smart_account', ?, ?, NOW(), NOW(), NOW())")
-            .bind(&id).bind(&user.id).bind(&address).bind(&state.config.network).bind(&challenge.signer_address).bind(provider_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO wallets (id, user_id, address, network, wallet_type, signer_address, provider_account_id, verified_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())")
+            .bind(&id).bind(&user.id).bind(&address).bind(&state.config.network).bind(wallet_type).bind(&challenge.signer_address).bind(provider_id).execute(&mut *tx).await?;
         id
     };
     sqlx::query("UPDATE wallet_challenges SET consumed_at = NOW() WHERE id = ?")

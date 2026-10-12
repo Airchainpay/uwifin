@@ -9,7 +9,7 @@ import {
   type Chain,
   type Account,
 } from 'viem';
-import { base, baseSepolia } from 'viem/chains';
+import { base, baseSepolia, mainnet } from 'viem/chains';
 import {
   alchemyWalletTransport,
   createSmartWalletClient,
@@ -24,13 +24,13 @@ export async function browserSigner(
   expected?: string,
   useEmail = true,
 ): Promise<WalletClient<Transport, Chain, Account>> {
+  const chain = [base, baseSepolia, mainnet].find((item) => item.id === chainId);
+  if (!chain) throw new Error('Unsupported wallet network.');
   const embedded = useEmail ? emailWalletAccount() : null;
   if (embedded && (!expected || embedded.address.toLowerCase() === expected.toLowerCase())) {
-    if (chainId !== base.id && chainId !== baseSepolia.id)
-      throw new Error('Unsupported wallet network.');
     return createWalletClient({
       account: embedded,
-      chain: chainId === base.id ? base : baseSepolia,
+      chain,
       transport: custom({
         request: async () => {
           throw new Error('Only signing is available here.');
@@ -43,9 +43,6 @@ export async function browserSigner(
     throw new Error(
       'Open UwiFin in a wallet browser or install an Ethereum wallet extension to connect.',
     );
-  if (chainId !== base.id && chainId !== baseSepolia.id)
-    throw new Error('Unsupported wallet network.');
-  const chain = chainId === base.id ? base : baseSepolia;
   const client = createWalletClient({ transport: custom(provider), chain });
   const [address] = await client.requestAddresses();
   if (!address || (expected && address.toLowerCase() !== expected.toLowerCase()))
@@ -59,6 +56,10 @@ export async function connectSmartWallet(
 ): Promise<Wallet> {
   if (!capabilities.wallet_enabled)
     throw new Error('Wallet connection is temporarily unavailable.');
+  if (capabilities.family === 'solana') {
+    if (mode === 'email') throw new Error('Connect a Solana wallet extension for this network.');
+    return (await import('./solana-wallet')).connectSolanaWallet();
+  }
   const signer = await browserSigner(capabilities.chain_id, undefined, mode === 'email');
   const challenge = await request<{ id: string; message: string }>('/wallets/challenge', {
     method: 'POST',
@@ -78,6 +79,9 @@ export async function signTransfer(
 ): Promise<void> {
   if (!wallet.signer_address) throw new Error('Reconnect your wallet to verify ownership.');
   if (['submitted', 'pending', 'confirmed', 'failed'].includes(intent.status)) return;
+  if (capabilities.family === 'solana') {
+    return (await import('./solana-wallet')).signSolanaTransfer(wallet, intent);
+  }
   const signer = await browserSigner(capabilities.chain_id, wallet.signer_address);
   const rpc = <T>(method: string, params: unknown[]) =>
     request<T>(`/transactions/${intent.id}/rpc`, {

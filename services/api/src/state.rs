@@ -10,6 +10,11 @@ pub struct AppState {
     pub password_slots: Arc<tokio::sync::Semaphore>,
 }
 impl AppState {
+    pub fn for_network(&self, network: &str) -> anyhow::Result<Self> {
+        let mut state = self.clone();
+        state.config = Arc::new(self.config.for_network(network)?);
+        Ok(state)
+    }
     pub fn new(pool: MySqlPool, config: Config) -> Self {
         Self {
             pool,

@@ -62,6 +62,9 @@ pub async fn verify_chain(state: &AppState) -> Result<(), ApiError> {
     Ok(())
 }
 pub async fn usdc_balance(state: &AppState, address: &str) -> Result<u128, ApiError> {
+    if state.config.is_solana() {
+        return crate::solana::balance(state, address).await;
+    }
     let address = validate_wallet_address(address)?;
     verify_chain(state).await?;
     let data = format!("0x70a08231{:0>64}", &address[2..]);

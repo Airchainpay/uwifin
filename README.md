@@ -76,3 +76,7 @@ This repository intentionally keeps the initial architecture simple and producti
 ## Real wallet setup
 
 See [Wallet operation and activation](docs/wallet-operations.md) for environment configuration, signing, sponsorship, Stripe setup, verification commands, and current release requirements. Copy both environment examples before starting. The wallet uses real provider APIs; absent configuration is displayed as unavailable. Real Alchemy testnet and approved Stripe test-mode checks are required before live activation. Fiat cash-out requires a supported payout partner and is not currently enabled.
+
+## USDC networks
+
+Base mainnet is the default, with Ethereum mainnet and Solana mainnet available on the wallet page. Only native USDC is supported. Set per-network RPC credentials and gas sponsorship policies in `.env`; see [wallet and network setup](docs/wallet-operations.md). Solana requires a connected Solana wallet and an approved Alchemy policy covering fees and account rent; users do not need SOL. Selecting another network does not move funds between chains.

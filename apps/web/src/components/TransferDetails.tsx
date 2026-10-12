@@ -1,4 +1,5 @@
 'use client';
+import { transactionUrl } from '@/lib/networks';
 import { type Transfer } from '@/lib/transfers';
 import { useFinance } from '@/contexts/FinanceContext';
 import { decimalAmount } from '@/lib/money';
@@ -64,7 +65,7 @@ export function TransferDetails({
             <dd>
               <code>{current.tx_hash}</code>
               <a
-                href={`https://${current.network === 'base' ? '' : 'sepolia.'}basescan.org/tx/${current.tx_hash}`}
+                href={transactionUrl(current.network, current.tx_hash)}
                 target="_blank"
                 rel="noopener noreferrer"
               >

@@ -17,23 +17,28 @@ async fn main() -> anyhow::Result<()> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if let Err(error) = uwifin_api::transaction::reconcile_pending(&worker_state).await {
-                tracing::warn!(
-                    error_code = error.error.code,
-                    "Transaction reconciliation unavailable"
-                );
-            }
-            if let Err(error) = uwifin_api::deposits::reconcile(&worker_state).await {
-                tracing::warn!(
-                    error_code = error.error.code,
-                    "Deposit reconciliation unavailable"
-                );
-            }
-            if let Err(error) = uwifin_api::payments::reconcile_pending(&worker_state).await {
-                tracing::warn!(
-                    error_code = error.error.code,
-                    "Payment reconciliation unavailable"
-                );
+            for provider in &worker_state.config.providers {
+                let scoped = worker_state
+                    .for_network(&provider.network)
+                    .expect("validated network");
+                if let Err(error) = uwifin_api::transaction::reconcile_pending(&scoped).await {
+                    tracing::warn!(
+                        error_code = error.error.code,
+                        "Transaction reconciliation unavailable"
+                    );
+                }
+                if let Err(error) = uwifin_api::deposits::reconcile(&scoped).await {
+                    tracing::warn!(
+                        error_code = error.error.code,
+                        "Deposit reconciliation unavailable"
+                    );
+                }
+                if let Err(error) = uwifin_api::payments::reconcile_pending(&scoped).await {
+                    tracing::warn!(
+                        error_code = error.error.code,
+                        "Payment reconciliation unavailable"
+                    );
+                }
             }
         }
     });
