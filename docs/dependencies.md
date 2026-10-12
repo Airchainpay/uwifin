@@ -5,7 +5,7 @@ Exact JavaScript versions are pinned in apps/web/package.json and pnpm-lock.yaml
 | Library                       | Tested version  | Purpose and choice                                          | Official source / alternative                                        | Security and license notes                                                               |
 | ----------------------------- | --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | Next.js / React               | 16.4.0 / 19.3.0 | App Router, session BFF, UI                                 | vercel/next.js; facebook/react                                       | MIT; keep server-only secrets outside public variables                                   |
-| viem                          | 2.57.4          | EIP-1193 wallet client, signing account and chain selection | wevm/viem; ethers is an alternative                                  | MIT; no custom private-key store                                                         |
+| viem                          | 2.56.5          | EIP-1193 wallet client, signing account and chain selection | wevm/viem; ethers is an alternative                                  | MIT; no custom private-key store                                                         |
 | Alchemy wallet-apis           | 5.3.0           | Official Wallet API signature handling                      | alchemyplatform/aa-sdk; supersedes Account Kit v4 for this flow      | MIT; provider credentials stay server-side; fixed transfer intents                       |
 | Stripe crypto                 | 1.1.3           | Official embedded Crypto Onramp loader                      | stripe/crypto-js; hosted flow is an alternative                      | MIT; requires approved provider access                                                   |
 | Stripe.js                     | 1.54.2          | Satisfies crypto package's declared ^1.46.0 peer            | stripe/stripe-js                                                     | MIT; pinned to compatible peer, not independent latest; runtime scripts load from Stripe |
@@ -16,11 +16,13 @@ Exact JavaScript versions are pinned in apps/web/package.json and pnpm-lock.yaml
 
 Official provider docs and installed SDK source were inspected for request/response shapes and signing behavior. `pnpm audit --prod --json` reported zero known advisories in this sandbox on 2026-10-08. This is a point-in-time registry result, not a security certification. A Rust advisory scan and independent security review remain production gates. No custom Solidity contract is needed for direct USDC transfers.
 
-## Email wallet onboarding
+## Automatic embedded wallets
 
-`@account-kit/signer` 4.88.5 (Alchemy's MIT-licensed aa-sdk repository) provides provider-managed email OTP signing. Only its signer is used; transfer orchestration remains on Wallet APIs 5.3.0. viem 2.57.4 satisfies its declared peer range. The alternative is requiring an external wallet; implementing a private-key vault is deliberately avoided. The email signer is used only for EVM; Solana uses a separately connected external wallet. Provider origin restrictions and OTP configuration are required. Browser use is dynamically loaded only when onboarding starts. Re-run `pnpm audit --prod` with every release and inspect SDK maintenance/advisories.
+`@privy-io/react-auth` **3.48.1** replaces the deprecated `@account-kit/signer`. Privy custom JWT authentication preserves UwiFin's email/password login and provisions embedded EVM/Solana signers. `jose` **6.2.12** signs five-minute ES256 tokens and exposes a public JWKS. Private wallet keys are not stored by the API. Browser loading is deferred through a client-only provider.
 
-The October 2026 registry scan exposed five advisories through signer transitive packages. Root pnpm overrides pin `js-cookie` 3.0.7 and `jayson` 5.0.0; the latter removes vulnerable stream-json/uuid dependencies. Its browser JSON-RPC request/callback interface was inspected against the prior version. Provider fixture signing and production build are required compatibility checks for these overrides; the app does not expose Jayson's server/stream APIs.
+The direct viem dependency is **2.56.5**, matching Privy's declared version and satisfying Alchemy's peer range. Mixing it with 2.57.4 caused incompatible recursive account types. `@solana/kit` **8.4.0**, token **0.17.0**, system **0.15.0**, and memo **0.15.0** satisfy the Alchemy SDK's Solana peers. Privy's optional transitive x402/WalletConnect dependencies retain peer warnings; the application does not use these flows. Validate live embedded signing with the configured Privy account before deployment.
+
+The existing `js-cookie` 3.0.7 and `jayson` 5.0.0 overrides remain. Rerun the production audit for each release; older zero-advisory results do not cover this new dependency tree.
 
 ## Rust audit findings (2026-10-10)
 
@@ -32,7 +34,7 @@ The receipt boundary reuses `alloy-primitives` **0.8.26** (`U256`, backed by loc
 
 EntryPoint event layout and execution ordering were checked against the tagged upstream [v0.7.0 interface](https://github.com/eth-infinitism/account-abstraction/blob/v0.7.0/contracts/interfaces/IEntryPoint.sol), [v0.7.0 implementation](https://github.com/eth-infinitism/account-abstraction/blob/v0.7.0/contracts/core/EntryPoint.sol), and [v0.6.0 interface](https://github.com/eth-infinitism/account-abstraction/blob/v0.6.0/contracts/interfaces/IEntryPoint.sol). `UserOperationEvent` indexes operation hash, sender and paymaster, and encodes nonce, success, actual gas cost and actual gas used. Receipt success alone is insufficient. Verification uses the prepared version, sender and full 256-bit nonce; token Transfer evidence must occur within that operation's execution logs. Canonical-block and confirmation-depth checks still apply. The stored gas fields describe the outer transaction, not an individual sponsored operation's bill.
 
-The existing provider fixture exercises `@alchemy/wallet-apis` **5.3.0** `createSmartWalletClient` / `signSignatureRequest` with `viem` **2.57.4**. It does not prove provider account eligibility, real sponsorship, or email OTP delivery. The Rust HTTP/database stack resolves to Axum **0.7.9**, Tokio **1.53.2**, SQLx **0.8.6**, and Reqwest **0.12.28** in Cargo.lock.
+The existing provider fixture exercises `@alchemy/wallet-apis` **5.3.0** `createSmartWalletClient` / `signSignatureRequest` with `viem` **2.56.5**. It does not prove provider account eligibility, real sponsorship, or Privy embedded signing. The Rust HTTP/database stack resolves to Axum **0.7.9**, Tokio **1.53.2**, SQLx **0.8.6**, and Reqwest **0.12.28** in Cargo.lock.
 
 ### Stripe SDK requirement discrepancy
 
@@ -49,3 +51,7 @@ Alchemy documents EVM network availability in its [supported chains reference](h
 ### Multichain dependency audit (2026-10-12)
 
 `pnpm audit --prod --json` reports zero advisories for the updated JavaScript lockfile. `cargo audit --file services/api/Cargo.lock --json` still fails on the existing SQLx transitive `rsa` 0.9.10 advisory RUSTSEC-2023-0071 (no patched version). It also reports unmaintained notices for `derivative`, `paste`, and now `bincode` 1.3.3 (RUSTSEC-2025-0141), used by the Solana SDK's message serializer. These notices are retained without suppressions; the Rust audit is not a passing release gate.
+
+### Privy dependency audit (2026-10-12)
+
+The first production audit found seven advisory occurrences across `ws`, `uuid`, and `decode-uri-component` through Privy’s optional WalletConnect/x402 dependency paths. Scoped overrides use `ws` 8.21.0 for older 8.x resolutions, `uuid` 11.1.1 for affected 8–11.x resolutions, and `decode-uri-component` 0.5.0. UUID’s named v4/validate APIs and dual CommonJS/ESM exports remain available; the decoder retains its default function export. The frontend build and provider signing fixture passed with these resolutions. The subsequent `pnpm audit --prod --json` passed with zero advisories. Rust’s unchanged audit findings above remain unresolved.

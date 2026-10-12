@@ -122,8 +122,8 @@ export function SettingsPage() {
       <section className="card settings-card">
         <h2>Wallet security</h2>
         <p>
-          Signing takes place in your connected wallet. Keep your signing account and recovery
-          phrase secure. UwiFin does not store your private keys.
+          Privy manages your embedded signing wallet. Keep your UwiFin account password secure.
+          UwiFin does not store your private wallet keys.
         </p>
       </section>
     </>

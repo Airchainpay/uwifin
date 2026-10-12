@@ -34,11 +34,11 @@ export function Dashboard() {
           <p>
             {address
               ? 'Balance read from the supported token contract.'
-              : 'Connect your wallet to view its balance.'}
+              : 'Your wallet is being prepared automatically.'}
           </p>
           <div className="balance-actions">
             <Link className="button balance-send" href={address ? '/send' : '/wallet'}>
-              {address ? 'Send USDC' : 'Connect wallet'}
+              {address ? 'Send USDC' : 'View wallet setup'}
             </Link>
             <Link className="button balance-receive" href="/receive">
               Receive

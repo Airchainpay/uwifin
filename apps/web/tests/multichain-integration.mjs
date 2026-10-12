@@ -434,7 +434,7 @@ try {
   assert.notEqual((await request('base', '/wallets', { body: signed })).status, 200);
   const solWallet = ok(await request('solana-mainnet', '/wallets', { body: signed }));
   assert.equal(solWallet.address, owner);
-  assert.equal(solWallet.wallet_type, 'external');
+  assert.equal(solWallet.wallet_type, 'signing_account');
   assert.notEqual((await request('solana-mainnet', '/wallets', { body: signed })).status, 200);
   assert.equal((await request('base', `/wallets/${solWallet.id}`)).status, 404);
   const balances = ok(await request('solana-mainnet', `/wallets/${solWallet.id}/balances`));

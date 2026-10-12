@@ -22,7 +22,7 @@ export function AuthPage({ register = false }: { register?: boolean }) {
     try {
       if (register) await createAccount(email, password, name);
       else await login(email, password);
-      router.push('/');
+      router.push(register ? '/wallet' : '/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to sign in. Try again.');
     } finally {
